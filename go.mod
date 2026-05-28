@@ -7,6 +7,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/knadh/koanf/v2 v2.3.4
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
