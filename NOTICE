@@ -1,0 +1,6 @@
+git-proxy-go
+Copyright 2026 GitProxy Contributors
+
+This product is a Go port of git-proxy
+(https://github.com/finos/git-proxy), originally developed at the
+Fintech Open Source Foundation (https://www.finos.org/).

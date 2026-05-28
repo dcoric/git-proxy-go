@@ -1,0 +1,26 @@
+# Binaries
+/bin/
+/dist/
+git-proxy
+migrate-data
+*.exe
+
+# Test / coverage
+*.out
+coverage.*
+*.test
+
+# Local config & data
+*.local.json
+/.data/
+/.tmp/
+/.remote/
+*.pem
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# goreleaser
+/dist/
