@@ -1,8 +1,8 @@
-# Binaries
+# Binaries (anchored to repo root so they don't match cmd/git-proxy/ source dirs)
 /bin/
 /dist/
-git-proxy
-migrate-data
+/git-proxy
+/migrate-data
 *.exe
 
 # Test / coverage
