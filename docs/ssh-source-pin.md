@@ -8,10 +8,12 @@ deltas weekly (task X-4).
 
 | Field | Value |
 |---|---|
-| Upstream PR | https://github.com/finos/git-proxy/pull/1332 |
-| Pinned commit SHA | `TODO — fill in at PF-4` |
-| Pinned at (date) | `TODO` |
-| Last delta review | `TODO` |
+| Upstream PR | https://github.com/finos/git-proxy/pull/1332 — "feat(ssh): Add SSH agent forwarding" |
+| Upstream branch | `ssh-agent-on-pr987` |
+| Pinned commit SHA | `222994f24bf00a1cdc71991cdac570da522c6fb0` |
+| Pinned at (date) | 2026-05-28 |
+| Size at pin | +10,821 / −169 across 73 files |
+| Last delta review | 2026-05-28 (initial pin) |
 
 ## How to refresh
 
