@@ -1,0 +1,612 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 GitProxy Contributors
+#
+# OpenAPI contract for the git-proxy management API (task P0-1 / #6), extracted
+# by inspection from the Node Express routes:
+#   src/service/routes/{home,auth,healthcheck,config,push,repo,users}.ts
+#   src/service/routes/index.ts  (mounting + jwtAuthHandler)
+# The Go backend must serve this contract unchanged so the existing React UI works.
+#
+# Auth: routes under /api/v1/{push,repo,user} use jwtAuthHandler, which accepts
+# EITHER an authenticated session cookie (connect.sid) OR an `Authorization`
+# bearer token. /api, /api/auth/*, /api/v1/healthcheck and /api/v1/config/* are open.
+openapi: 3.0.3
+info:
+  title: git-proxy management API
+  version: "1.0.0"
+  description: >
+    Management/control-plane API consumed by the git-proxy React UI and CLI.
+    The git smart-HTTP transport (info/refs, git-upload-pack, git-receive-pack)
+    is a separate reverse-proxy surface and is summarised under the `git-transport` tag.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: /
+    description: Same-origin (UI served by the same process)
+
+tags:
+  - name: home
+  - name: auth
+  - name: healthcheck
+  - name: config
+  - name: push
+  - name: repo
+  - name: user
+  - name: git-transport
+
+paths:
+  /api:
+    get:
+      tags: [home]
+      summary: API resource index
+      responses:
+        "200":
+          description: Resource links
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  healthcheck: { type: string }
+                  push: { type: string }
+                  auth: { type: string }
+
+  /api/v1/healthcheck:
+    get:
+      tags: [healthcheck]
+      summary: Liveness check
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: ok }
+
+  /api/auth:
+    get:
+      tags: [auth]
+      summary: Auth action index
+      responses:
+        "200":
+          description: Login/profile/logout actions
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/auth/config:
+    get:
+      tags: [auth]
+      summary: Enabled auth methods
+      responses:
+        "200":
+          description: Username/password method (if any) plus other enabled methods
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  usernamePasswordMethod: { type: string, nullable: true }
+                  otherMethods:
+                    type: array
+                    items: { type: string }
+
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: Username/password login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Logged in; sets session cookie
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: success }
+                  user: { $ref: "#/components/schemas/PublicUser" }
+        "403": { description: Username/password login not enabled }
+        "500": { $ref: "#/components/responses/PlainError" }
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      summary: Log out
+      responses:
+        "200":
+          description: Logged out; clears connect.sid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  isAuth: { type: boolean }
+                  user: { nullable: true }
+
+  /api/auth/profile:
+    get:
+      tags: [auth]
+      summary: Current user profile
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Public profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicUser" }
+        "401": { $ref: "#/components/responses/Message" }
+        "404": { $ref: "#/components/responses/Message" }
+
+  /api/auth/gitAccount:
+    post:
+      tags: [auth]
+      summary: Set a user's linked git account
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                id: { type: string }
+                gitAccount: { type: string }
+      responses:
+        "200": { description: Updated }
+        "400": { $ref: "#/components/responses/Message" }
+        "401": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Message" }
+        "404": { $ref: "#/components/responses/Message" }
+        "500": { $ref: "#/components/responses/Message" }
+
+  /api/auth/create-user:
+    post:
+      tags: [auth]
+      summary: Create a user (admin only)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, email, gitAccount]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+                email: { type: string, format: email }
+                gitAccount: { type: string }
+                admin: { type: boolean, default: false }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  username: { type: string }
+        "400": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Message" }
+        "500": { $ref: "#/components/responses/Message" }
+
+  /api/auth/openidconnect:
+    get:
+      tags: [auth]
+      summary: Begin OIDC login
+      responses:
+        "302": { description: Redirect to the OIDC provider }
+
+  /api/auth/openidconnect/callback:
+    get:
+      tags: [auth]
+      summary: OIDC callback
+      responses:
+        "302": { description: Redirect to the UI dashboard on success }
+        "401": { description: No user }
+        "500": { description: Authentication/login error }
+
+  /api/v1/config/attestation:
+    get:
+      tags: [config]
+      summary: Attestation config
+      responses:
+        "200": { description: Attestation configuration, content: { application/json: { schema: { type: object } } } }
+
+  /api/v1/config/urlShortener:
+    get:
+      tags: [config]
+      summary: URL shortener config
+      responses:
+        "200": { description: URL shortener string/config, content: { application/json: {} } }
+
+  /api/v1/config/contactEmail:
+    get:
+      tags: [config]
+      summary: Contact email
+      responses:
+        "200": { description: Contact email, content: { application/json: {} } }
+
+  /api/v1/config/uiRouteAuth:
+    get:
+      tags: [config]
+      summary: UI route auth config
+      responses:
+        "200": { description: UI route auth configuration, content: { application/json: { schema: { type: object } } } }
+
+  /api/v1/push:
+    get:
+      tags: [push]
+      summary: List push requests
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: skip, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          description: Matching push requests
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Push" } }
+
+  /api/v1/push/{id}:
+    get:
+      tags: [push]
+      summary: Get a push request
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Push, content: { application/json: { schema: { $ref: "#/components/schemas/Push" } } } }
+        "404": { $ref: "#/components/responses/Message" }
+
+  /api/v1/push/{id}/reject:
+    post:
+      tags: [push]
+      summary: Reject a push request
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string } }
+      responses:
+        "200": { description: Updated push, content: { application/json: { schema: { $ref: "#/components/schemas/Push" } } } }
+        "400": { $ref: "#/components/responses/Message" }
+        "401": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Message" }
+        "404": { $ref: "#/components/responses/Message" }
+
+  /api/v1/push/{id}/authorise:
+    post:
+      tags: [push]
+      summary: Approve a push request (with attestation)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                params:
+                  type: object
+                  properties:
+                    attestation:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          label: { type: string }
+                          checked: { type: boolean }
+      responses:
+        "200": { description: Updated push, content: { application/json: { schema: { $ref: "#/components/schemas/Push" } } } }
+        "400": { $ref: "#/components/responses/Message" }
+        "401": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Message" }
+        "404": { $ref: "#/components/responses/Message" }
+
+  /api/v1/push/{id}/cancel:
+    post:
+      tags: [push]
+      summary: Cancel a push request
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Updated push, content: { application/json: { schema: { $ref: "#/components/schemas/Push" } } } }
+        "401": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Message" }
+
+  /api/v1/repo:
+    get:
+      tags: [repo]
+      summary: List repositories
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: skip, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          description: Repositories (each annotated with proxyURL)
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Repo" } }
+    post:
+      tags: [repo]
+      summary: Create a proxied repository (admin only)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                project: { type: string }
+                name: { type: string }
+                url: { type: string }
+      responses:
+        "200": { description: Created repo, content: { application/json: { schema: { $ref: "#/components/schemas/Repo" } } } }
+        "400": { $ref: "#/components/responses/Message" }
+        "401": { $ref: "#/components/responses/Message" }
+        "409": { $ref: "#/components/responses/Message" }
+        "500": { $ref: "#/components/responses/Message" }
+
+  /api/v1/repo/{id}:
+    get:
+      tags: [repo]
+      summary: Get a repository
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Repository, content: { application/json: { schema: { $ref: "#/components/schemas/Repo" } } } }
+
+  /api/v1/repo/{id}/user/push:
+    patch:
+      tags: [repo]
+      summary: Grant push permission to a user (admin only)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [username], properties: { username: { type: string } } }
+      responses:
+        "200": { $ref: "#/components/responses/Created" }
+        "400": { $ref: "#/components/responses/ErrorObj" }
+        "401": { $ref: "#/components/responses/Message" }
+
+  /api/v1/repo/{id}/user/authorise:
+    patch:
+      tags: [repo]
+      summary: Grant authorise permission to a user (admin only)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [username], properties: { username: { type: string } } }
+      responses:
+        "200": { $ref: "#/components/responses/Created" }
+        "400": { $ref: "#/components/responses/ErrorObj" }
+        "401": { $ref: "#/components/responses/Message" }
+
+  /api/v1/repo/{id}/user/authorise/{username}:
+    delete:
+      tags: [repo]
+      summary: Revoke authorise permission (admin only)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Username" }
+      responses:
+        "200": { $ref: "#/components/responses/Created" }
+        "400": { $ref: "#/components/responses/ErrorObj" }
+        "401": { $ref: "#/components/responses/Message" }
+
+  /api/v1/repo/{id}/user/push/{username}:
+    delete:
+      tags: [repo]
+      summary: Revoke push permission (admin only)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Username" }
+      responses:
+        "200": { $ref: "#/components/responses/Created" }
+        "400": { $ref: "#/components/responses/ErrorObj" }
+        "401": { $ref: "#/components/responses/Message" }
+
+  /api/v1/repo/{id}/delete:
+    delete:
+      tags: [repo]
+      summary: Delete a proxied repository (admin only)
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { type: object, properties: { message: { type: string, example: deleted } } }
+        "401": { $ref: "#/components/responses/Message" }
+
+  /api/v1/user:
+    get:
+      tags: [user]
+      summary: List users
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/PublicUser" } }
+
+  /api/v1/user/{id}:
+    get:
+      tags: [user]
+      summary: Get a user
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: User, content: { application/json: { schema: { $ref: "#/components/schemas/PublicUser" } } } }
+        "404": { $ref: "#/components/responses/Message" }
+
+  "/{owner}/{repo}.git/info/refs":
+    get:
+      tags: [git-transport]
+      summary: Git ref advertisement (smart-HTTP). Proxied to the upstream after policy checks.
+      parameters:
+        - { name: owner, in: path, required: true, schema: { type: string } }
+        - { name: repo, in: path, required: true, schema: { type: string } }
+        - { name: service, in: query, required: true, schema: { type: string, enum: [git-upload-pack, git-receive-pack] } }
+      responses:
+        "200":
+          description: Ref advertisement
+          content:
+            application/x-git-upload-pack-advertisement: {}
+            application/x-git-receive-pack-advertisement: {}
+
+  "/{owner}/{repo}.git/git-receive-pack":
+    post:
+      tags: [git-transport]
+      summary: Receive-pack (push). Runs the 15-step processor chain before forwarding.
+      parameters:
+        - { name: owner, in: path, required: true, schema: { type: string } }
+        - { name: repo, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/x-git-receive-pack-request: {}
+      responses:
+        "200":
+          description: Receive-pack result
+          content:
+            application/x-git-receive-pack-result: {}
+
+  "/{owner}/{repo}.git/git-upload-pack":
+    post:
+      tags: [git-transport]
+      summary: Upload-pack (fetch/clone). Proxied to the upstream.
+      parameters:
+        - { name: owner, in: path, required: true, schema: { type: string } }
+        - { name: repo, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/x-git-upload-pack-request: {}
+      responses:
+        "200":
+          description: Upload-pack result
+          content:
+            application/x-git-upload-pack-result: {}
+
+components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    Username:
+      name: username
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    Message:
+      description: Status/error message
+      content:
+        application/json:
+          schema: { type: object, properties: { message: { type: string } } }
+    ErrorObj:
+      description: Error object
+      content:
+        application/json:
+          schema: { type: object, properties: { error: { type: string } } }
+    Created:
+      description: Permission change applied
+      content:
+        application/json:
+          schema: { type: object, properties: { message: { type: string, example: created } } }
+    PlainError:
+      description: Plain-text error
+      content:
+        text/plain:
+          schema: { type: string }
+
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: connect.sid
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    PublicUser:
+      type: object
+      description: User as exposed by the API (no password hash).
+      properties:
+        username: { type: string }
+        displayName: { type: string }
+        email: { type: string }
+        title: { type: string }
+        gitAccount: { type: string }
+        admin: { type: boolean }
+    Repo:
+      type: object
+      properties:
+        _id: { type: string }
+        project: { type: string }
+        name: { type: string }
+        url: { type: string }
+        proxyURL: { type: string }
+        users:
+          type: object
+          properties:
+            canPush: { type: array, items: { type: string } }
+            canAuthorise: { type: array, items: { type: string } }
+    Push:
+      type: object
+      properties:
+        id: { type: string }
+        repo: { type: string }
+        branch: { type: string }
+        commitFrom: { type: string }
+        commitTo: { type: string }
+        type: { type: string, example: push }
+        userEmail: { type: string }
+        canceled: { type: boolean }
+        rejected: { type: boolean }
+        authorised: { type: boolean }
+        blocked: { type: boolean }
+        blockedMessage: { type: string }
+        commitData: { type: array, items: { type: object } }

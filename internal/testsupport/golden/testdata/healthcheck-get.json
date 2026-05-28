@@ -1,0 +1,17 @@
+{
+  "name": "healthcheck-get",
+  "description": "GET /api/v1/healthcheck — liveness. Illustrative example of the fixture format; real fixtures are captured from the Node reference (see test/golden/README.md).",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/healthcheck",
+    "headers": {},
+    "body": ""
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"message\":\"ok\"}"
+  }
+}
