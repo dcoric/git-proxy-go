@@ -1,0 +1,184 @@
+{
+  "cookieSecret": "cookie secret",
+  "sessionMaxAgeHours": 12,
+  "rateLimit": {
+    "windowMs": 60000,
+    "limit": 1000
+  },
+  "tempPassword": {
+    "sendEmail": false,
+    "emailConfig": {}
+  },
+  "authorisedList": [
+    {
+      "project": "finos",
+      "name": "git-proxy",
+      "url": "https://github.com/finos/git-proxy.git"
+    }
+  ],
+  "sink": [
+    {
+      "type": "fs",
+      "enabled": true
+    },
+    {
+      "type": "mongo",
+      "connectionString": "mongodb://localhost:27017/gitproxy",
+      "options": {
+        "useNewUrlParser": true,
+        "useUnifiedTopology": true,
+        "tlsAllowInvalidCertificates": false,
+        "ssl": true
+      },
+      "enabled": false
+    }
+  ],
+  "authentication": [
+    {
+      "type": "local",
+      "enabled": true
+    },
+    {
+      "type": "ActiveDirectory",
+      "enabled": false,
+      "adminGroup": "",
+      "userGroup": "",
+      "domain": "",
+      "adConfig": {
+        "url": "",
+        "baseDN": "",
+        "searchBase": "",
+        "username": "",
+        "password": ""
+      }
+    },
+    {
+      "type": "openidconnect",
+      "enabled": false,
+      "oidcConfig": {
+        "issuer": "",
+        "clientID": "",
+        "clientSecret": "",
+        "callbackURL": "",
+        "scope": ""
+      }
+    }
+  ],
+  "api": {},
+  "commitConfig": {
+    "author": {
+      "email": {
+        "local": {
+          "block": ""
+        },
+        "domain": {
+          "allow": ".*"
+        }
+      }
+    },
+    "message": {
+      "block": {
+        "literals": [],
+        "patterns": []
+      }
+    },
+    "diff": {
+      "block": {
+        "literals": [],
+        "patterns": [],
+        "providers": {}
+      }
+    }
+  },
+  "attestationConfig": {
+    "questions": [
+      {
+        "label": "I am happy for this to be pushed to the upstream repository",
+        "tooltip": {
+          "text": "Are you happy for this contribution to be pushed upstream?",
+          "links": []
+        }
+      }
+    ]
+  },
+  "configurationSources": {
+    "enabled": false,
+    "reloadIntervalSeconds": 60,
+    "merge": false,
+    "sources": [
+      {
+        "type": "file",
+        "enabled": false,
+        "path": "./external-config.json"
+      },
+      {
+        "type": "http",
+        "enabled": false,
+        "url": "http://config-service/git-proxy-config",
+        "headers": {},
+        "auth": {
+          "type": "bearer",
+          "token": ""
+        }
+      },
+      {
+        "type": "git",
+        "enabled": false,
+        "repository": "https://git-server.com/project/git-proxy-config",
+        "branch": "main",
+        "path": "git-proxy/config.json",
+        "auth": {
+          "type": "ssh",
+          "privateKeyPath": "/path/to/.ssh/id_rsa"
+        }
+      }
+    ]
+  },
+  "domains": {},
+  "privateOrganizations": [],
+  "urlShortener": "",
+  "contactEmail": "",
+  "csrfProtection": true,
+  "plugins": [],
+  "apiAuthentication": [
+    {
+      "type": "jwt",
+      "enabled": false,
+      "jwtConfig": {
+        "authorityURL": "",
+        "clientID": "",
+        "expectedAudience": "",
+        "roleMapping": {
+          "admin": {
+            "": ""
+          }
+        }
+      }
+    }
+  ],
+  "upstreamProxy": {
+    "enabled": false,
+    "url": "http://localhost:8081",
+    "noProxy": []
+  },
+  "tls": {
+    "enabled": false,
+    "key": "certs/key.pem",
+    "cert": "certs/cert.pem"
+  },
+  "uiRouteAuth": {
+    "enabled": false,
+    "rules": [
+      {
+        "pattern": "/dashboard/*",
+        "adminOnly": false,
+        "loginRequired": true
+      },
+      {
+        "pattern": "/admin/*",
+        "adminOnly": true,
+        "loginRequired": true
+      }
+    ]
+  }
+}
