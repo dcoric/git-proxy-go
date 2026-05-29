@@ -15,15 +15,19 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/alexedwards/scs/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rs/cors"
 	"github.com/unrolled/secure"
 	"golang.org/x/time/rate"
+
+	"github.com/dcoric/git-proxy-go/internal/auth"
+	"github.com/dcoric/git-proxy-go/internal/db"
 )
 
 // Options configures the server. Values are defaulted to mirror the Node
-// middleware setup; they will be sourced from config once P1-3 lands.
+// middleware setup; they are sourced from config in the entrypoint.
 type Options struct {
 	// AllowedOrigins for CORS. The sentinel ["*"] reflects the request origin
 	// (so credentials still work), mirroring the Node dev default ALLOWED_ORIGINS=*.
@@ -32,6 +36,22 @@ type Options struct {
 	// TODO(parity): the Node express-rate-limit is per-IP; make this per-client.
 	RateLimitRPS   float64
 	RateLimitBurst int
+
+	// Sessions, Store and Auth wire the management auth routes (/api/auth, P3).
+	// When all three are set, NewRouter adds the session middleware and mounts
+	// the auth routes; otherwise the router serves only the healthcheck +
+	// middleware (the P1 behaviour).
+	Sessions *scs.SessionManager
+	Store    db.Store
+	Auth     *auth.Registry
+	// CSRFProtection enables the csrf-cookie + X-CSRF-TOKEN double-submit
+	// middleware, gated on the csrfProtection config flag.
+	CSRFProtection bool
+}
+
+// authReady reports whether the auth dependencies are all wired.
+func (o Options) authReady() bool {
+	return o.Sessions != nil && o.Store != nil && o.Auth != nil
 }
 
 func (o Options) withDefaults() Options {
@@ -58,8 +78,21 @@ func NewRouter(opts Options) http.Handler {
 	r.Use(rateLimit(opts))
 	r.Use(securityHeaders())
 
+	// Session then CSRF, mirroring the Node order (session → lusca → routes).
+	if opts.Sessions != nil {
+		r.Use(opts.Sessions.LoadAndSave)
+	}
+	if opts.CSRFProtection {
+		r.Use(CSRFProtection())
+	}
+
 	// P1-4: liveness, matching the Node contract (GET → {"message":"ok"}).
 	r.Get("/api/v1/healthcheck", healthcheck)
+
+	// P3: management auth routes, mounted once the store/session/registry are wired.
+	if opts.authReady() {
+		(&authHandler{store: opts.Store, sessions: opts.Sessions, registry: opts.Auth}).mount(r)
+	}
 
 	return r
 }
