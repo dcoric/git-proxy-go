@@ -3,6 +3,8 @@ module github.com/dcoric/git-proxy-go
 go 1.25.7
 
 require (
+	github.com/alexedwards/scs/postgresstore v0.0.0-20251002162104-209de6e426de
+	github.com/alexedwards/scs/v2 v2.9.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/jackc/pgx/v5 v5.9.2
