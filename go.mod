@@ -7,6 +7,7 @@ require (
 	github.com/alexedwards/scs/v2 v2.9.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-git/go-git/v5 v5.19.1
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/knadh/koanf/parsers/json v1.0.0
 	github.com/knadh/koanf/providers/file v1.2.1
