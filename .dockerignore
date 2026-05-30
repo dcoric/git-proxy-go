@@ -1,0 +1,9 @@
+.git
+.github
+*.md
+docs
+dist
+.remote
+.ssh
+testdata
+**/*_test.go
