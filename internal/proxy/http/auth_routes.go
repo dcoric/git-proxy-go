@@ -4,6 +4,9 @@
 package proxyhttp
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -15,9 +18,13 @@ import (
 	"github.com/dcoric/git-proxy-go/internal/db"
 )
 
-// sessionKeyUsername is the session field holding the logged-in username (the
-// scs equivalent of passport's serialized user).
-const sessionKeyUsername = "username"
+// Session field names: the scs equivalents of passport's serialized user
+// (username) and the OIDC anti-forgery state held between the start redirect
+// and the callback.
+const (
+	sessionKeyUsername  = "username"
+	sessionKeyOIDCState = "oidc_state"
+)
 
 // authHandler serves /api/auth: the Go port of src/service/routes/auth.ts.
 // Authentication uses the session (scs) rather than passport's req.user.
@@ -25,6 +32,9 @@ type authHandler struct {
 	store    db.Store
 	sessions *scs.SessionManager
 	registry *auth.Registry
+	// oidcRedirectURL is where a successful OIDC login lands the browser
+	// (the UI profile page); empty when OIDC is disabled.
+	oidcRedirectURL string
 }
 
 // publicUser is the non-sensitive user view returned to the UI (toPublicUser).
@@ -62,6 +72,10 @@ func (h *authHandler) mount(r chi.Router) {
 		r.Post("/login", h.login)
 		r.Post("/logout", h.logout)
 		r.Get("/profile", h.profile)
+		if h.registry.OIDC() != nil {
+			r.Get("/openidconnect", h.oidcStart)
+			r.Get("/openidconnect/callback", h.oidcCallback)
+		}
 	})
 }
 
@@ -149,6 +163,69 @@ func (h *authHandler) profile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toPublicUser(user))
+}
+
+// oidcStart begins the OIDC authorization-code flow: it mints a random state,
+// stashes it in the session, and redirects the browser to the provider's
+// authorization endpoint. Port of GET /openidconnect.
+func (h *authHandler) oidcStart(w http.ResponseWriter, r *http.Request) {
+	state, err := randomState()
+	if err != nil {
+		slog.Error("oidc state generation failed", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	h.sessions.Put(r.Context(), sessionKeyOIDCState, state)
+	http.Redirect(w, r, h.registry.OIDC().AuthCodeURL(state), http.StatusFound)
+}
+
+// oidcCallback completes the flow: it verifies the state, exchanges the code for
+// tokens, provisions/looks up the user, establishes the session and redirects to
+// the UI profile page. Port of GET /openidconnect/callback.
+func (h *authHandler) oidcCallback(w http.ResponseWriter, r *http.Request) {
+	want := h.sessions.GetString(r.Context(), sessionKeyOIDCState)
+	got := r.URL.Query().Get("state")
+	if want == "" || got == "" || subtle.ConstantTimeCompare([]byte(want), []byte(got)) != 1 {
+		http.Error(w, "invalid OIDC state", http.StatusBadRequest)
+		return
+	}
+	h.sessions.Remove(r.Context(), sessionKeyOIDCState)
+
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "missing authorization code", http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.registry.OIDC().Exchange(r.Context(), code)
+	if err != nil {
+		slog.Error("oidc authentication error", "err", err)
+		http.Error(w, "authentication error", http.StatusInternalServerError)
+		return
+	}
+	if user == nil {
+		http.Error(w, "no user found", http.StatusUnauthorized)
+		return
+	}
+
+	// Establish the session (renew the token to prevent fixation).
+	if err := h.sessions.RenewToken(r.Context()); err != nil {
+		slog.Error("session renew failed", "err", err)
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	h.sessions.Put(r.Context(), sessionKeyUsername, user.Username)
+
+	http.Redirect(w, r, h.oidcRedirectURL, http.StatusFound)
+}
+
+// randomState returns a 256-bit URL-safe random string for the OIDC state.
+func randomState() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

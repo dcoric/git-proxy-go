@@ -21,10 +21,12 @@ type LoginStrategy interface {
 }
 
 // Registry is the Passport-equivalent multiplex: it holds the enabled auth
-// methods and the username/password strategy that /login should use.
+// methods, the username/password strategy that /login should use, and the OIDC
+// strategy (when enabled) backing the openidconnect routes.
 type Registry struct {
 	enabledTypes []string
 	login        LoginStrategy
+	oidc         *OIDCStrategy
 }
 
 // BuildRegistry constructs the registry from the enabled authentication methods
@@ -47,6 +49,15 @@ func BuildRegistry(cfg *config.Config, store db.Store) *Registry {
 	}
 	return r
 }
+
+// EnableOIDC registers the OIDC strategy. It is constructed separately from
+// BuildRegistry (in the entrypoint) so provider discovery runs at startup and
+// its errors surface there rather than on the first request.
+func (r *Registry) EnableOIDC(s *OIDCStrategy) { r.oidc = s }
+
+// OIDC returns the registered OIDC strategy, or nil when openidconnect is not
+// enabled. The router mounts the openidconnect routes only when this is non-nil.
+func (r *Registry) OIDC() *OIDCStrategy { return r.oidc }
 
 // LoginStrategy returns the configured username/password strategy, or nil when
 // none is enabled (in which case /login responds 403, as in Node).

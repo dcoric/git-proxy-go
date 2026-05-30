@@ -47,6 +47,10 @@ type Options struct {
 	// CSRFProtection enables the csrf-cookie + X-CSRF-TOKEN double-submit
 	// middleware, gated on the csrfProtection config flag.
 	CSRFProtection bool
+	// OIDCRedirectURL is where a successful OIDC login redirects the browser
+	// (the UI profile page, ${GIT_PROXY_UI_HOST}:${GIT_PROXY_UI_PORT}/dashboard/profile).
+	// Only used when the registry has an OIDC strategy enabled.
+	OIDCRedirectURL string
 }
 
 // authReady reports whether the auth dependencies are all wired.
@@ -91,7 +95,12 @@ func NewRouter(opts Options) http.Handler {
 
 	// P3: management auth routes, mounted once the store/session/registry are wired.
 	if opts.authReady() {
-		(&authHandler{store: opts.Store, sessions: opts.Sessions, registry: opts.Auth}).mount(r)
+		(&authHandler{
+			store:           opts.Store,
+			sessions:        opts.Sessions,
+			registry:        opts.Auth,
+			oidcRedirectURL: opts.OIDCRedirectURL,
+		}).mount(r)
 	}
 
 	return r
