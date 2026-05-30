@@ -15,19 +15,25 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/dcoric/git-proxy-go/internal/auth"
+	"github.com/dcoric/git-proxy-go/internal/chain"
 	"github.com/dcoric/git-proxy-go/internal/config"
+	"github.com/dcoric/git-proxy-go/internal/db"
 	"github.com/dcoric/git-proxy-go/internal/db/migrations"
 	"github.com/dcoric/git-proxy-go/internal/db/postgres"
+	"github.com/dcoric/git-proxy-go/internal/giturl"
+	proxygit "github.com/dcoric/git-proxy-go/internal/proxy/git"
 	proxyhttp "github.com/dcoric/git-proxy-go/internal/proxy/http"
 	"github.com/dcoric/git-proxy-go/internal/session"
 )
@@ -61,28 +67,50 @@ func run() error {
 		OIDCRedirectURL: fmt.Sprintf("%s:%s/dashboard/profile", env.UIHost, env.UIPort),
 	}
 
-	// Wire the Postgres-backed session + auth routes when a DSN is configured.
-	// Without it the binary still boots and serves the healthcheck (P1 behaviour).
+	// Wire the Postgres-backed session + auth routes, and the git transport
+	// proxy, when a DSN is configured. Without it the binary still boots and
+	// serves the management healthcheck (P1 behaviour); the git proxy needs the
+	// store (for the chain's repo lookups and audit) so it is gated likewise.
+	var gitHandler http.Handler
 	if dsn := os.Getenv("GIT_PROXY_DB_DSN"); dsn != "" {
 		store, err := setupAuth(ctx, cfg, dsn, &opts)
 		if err != nil {
 			return err
 		}
 		defer store.Close()
+
+		gitHandler, err = setupGitProxy(ctx, cfg, store)
+		if err != nil {
+			return err
+		}
 	}
 
 	router := proxyhttp.NewRouter(opts)
 
-	listeners := proxyhttp.Listeners{HTTPAddr: net.JoinHostPort("", env.UIPort)}
+	mgmt := proxyhttp.Listeners{HTTPAddr: net.JoinHostPort("", env.UIPort)}
 	if cfg.TLSEnabled() {
-		listeners.HTTPSAddr = net.JoinHostPort("", env.HTTPSUIPort)
-		listeners.CertFile = cfg.TLSCertPath()
-		listeners.KeyFile = cfg.TLSKeyPath()
+		mgmt.HTTPSAddr = net.JoinHostPort("", env.HTTPSUIPort)
+		mgmt.CertFile = cfg.TLSCertPath()
+		mgmt.KeyFile = cfg.TLSKeyPath()
 	}
-
-	servers, err := proxyhttp.NewServers(listeners, router)
+	mgmtServers, err := proxyhttp.NewServers(mgmt, router)
 	if err != nil {
 		return err
+	}
+	servers := []*proxyhttp.Servers{mgmtServers}
+
+	if gitHandler != nil {
+		git := proxyhttp.Listeners{HTTPAddr: net.JoinHostPort("", env.GitServerPort)}
+		if cfg.TLSEnabled() {
+			git.HTTPSAddr = net.JoinHostPort("", env.HTTPSGitServerPort)
+			git.CertFile = cfg.TLSCertPath()
+			git.KeyFile = cfg.TLSKeyPath()
+		}
+		gitServers, err := proxyhttp.NewServers(git, gitHandler)
+		if err != nil {
+			return err
+		}
+		servers = append(servers, gitServers)
 	}
 
 	slog.Info("git-proxy-go starting",
@@ -90,11 +118,98 @@ func run() error {
 		"config", configSource(cfg),
 		"tls", cfg.TLSEnabled(),
 		"auth", opts.Store != nil,
+		"git_proxy", gitHandler != nil,
 	)
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return servers.Serve(sigCtx)
+	return serveAll(sigCtx, servers...)
+}
+
+// serveAll runs every server until ctx is cancelled (or one fails), returning
+// the first non-shutdown error. Each Servers.Serve shuts itself down on ctx
+// cancellation.
+func serveAll(ctx context.Context, servers ...*proxyhttp.Servers) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(servers))
+	for _, s := range servers {
+		wg.Add(1)
+		go func(s *proxyhttp.Servers) {
+			defer wg.Done()
+			errCh <- s.Serve(ctx)
+		}(s)
+	}
+	wg.Wait()
+	close(errCh)
+
+	var first error
+	for err := range errCh {
+		if err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// setupGitProxy seeds the authorised repos and builds the git transport proxy
+// handler over the chain engine. Mirrors the Node proxyPreparations + getRouter.
+func setupGitProxy(ctx context.Context, cfg *config.Config, store *postgres.Store) (http.Handler, error) {
+	if err := seedAuthorisedRepos(ctx, cfg, store); err != nil {
+		return nil, fmt.Errorf("seed authorised repos: %w", err)
+	}
+	origins, err := proxiedHosts(ctx, store)
+	if err != nil {
+		return nil, fmt.Errorf("list proxied hosts: %w", err)
+	}
+	return proxygit.NewHandler(chain.NewEngine(store), origins), nil
+}
+
+// seedAuthorisedRepos ensures every repo in the config's authorisedList exists
+// in the store, granting admin push/authorise rights on newly created ones
+// (mirrors the default-repo seeding in proxyPreparations).
+func seedAuthorisedRepos(ctx context.Context, cfg *config.Config, store *postgres.Store) error {
+	repos, err := store.GetRepos(ctx, db.RepoQuery{})
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]bool, len(repos))
+	for _, r := range repos {
+		existing[r.URL] = true
+	}
+	for _, ar := range cfg.AuthorisedList {
+		if existing[ar.URL] {
+			continue
+		}
+		created, err := store.CreateRepo(ctx, &db.Repo{Project: ar.Project, Name: ar.Name, URL: ar.URL})
+		if err != nil {
+			return err
+		}
+		if err := store.AddUserCanPush(ctx, created.ID, "admin"); err != nil {
+			return err
+		}
+		if err := store.AddUserCanAuthorise(ctx, created.ID, "admin"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// proxiedHosts returns the distinct upstream hosts of the store's repos — the
+// origins the git proxy recognises (Go port of getAllProxiedHosts).
+func proxiedHosts(ctx context.Context, store *postgres.Store) ([]string, error) {
+	repos, err := store.GetRepos(ctx, db.RepoQuery{})
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(repos))
+	hosts := make([]string, 0, len(repos))
+	for _, r := range repos {
+		if b := giturl.ProcessGitURL(r.URL); b != nil && !seen[b.Host] {
+			seen[b.Host] = true
+			hosts = append(hosts, b.Host)
+		}
+	}
+	return hosts, nil
 }
 
 // setupAuth connects the store, applies migrations, and populates the session +
