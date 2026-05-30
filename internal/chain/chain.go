@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dcoric/git-proxy-go/internal/config"
@@ -23,6 +24,7 @@ import (
 type Store interface {
 	GetRepoByURL(ctx context.Context, url string) (*db.Repo, error)
 	GetUsers(ctx context.Context, q db.UserQuery) ([]*db.User, error)
+	GetPush(ctx context.Context, id string) (*db.Push, error)
 	WriteAudit(ctx context.Context, p *db.Push) error
 	Authorise(ctx context.Context, id string, attestation *db.Attestation) (string, error)
 	Reject(ctx context.Context, id string, rejection db.Rejection) (string, error)
@@ -42,6 +44,13 @@ type Engine struct {
 	cfg   *config.Config
 	// remoteDir is the base directory for per-push clones (Node's ./.remote).
 	remoteDir string
+	// uiPort / proxyPort build the service UI URL in blockForAuth: the inbound
+	// request arrives on proxyPort, which is swapped for uiPort (Node getServiceUIURL).
+	uiPort    string
+	proxyPort string
+	// preReceiveHook is the external pre-receive hook script path (Node's
+	// hookFilePath default); overridable in tests.
+	preReceiveHook string
 
 	pushChain    []Processor
 	pullChain    []Processor
@@ -55,8 +64,8 @@ const remoteDirDefault = ".remote"
 // processor chains. The push chain mirrors the Node order up to (but not
 // including) pullRemote; the clone/post-clone processors are appended as they
 // land (#46–#54).
-func NewEngine(store Store, cfg *config.Config) *Engine {
-	e := &Engine{store: store, cfg: cfg, remoteDir: remoteDirDefault}
+func NewEngine(store Store, cfg *config.Config, uiPort, proxyPort string) *Engine {
+	e := &Engine{store: store, cfg: cfg, remoteDir: remoteDirDefault, uiPort: uiPort, proxyPort: proxyPort, preReceiveHook: preReceiveHookPath}
 	e.pushChain = []Processor{
 		e.parsePush,
 		e.checkEmptyBranch,
@@ -67,12 +76,37 @@ func NewEngine(store Store, cfg *config.Config) *Engine {
 		e.pullRemote,
 		e.writePack,
 		e.checkHiddenCommits,
+		e.checkIfWaitingAuth,
+		e.preReceive,
 		e.getDiff,
+		e.gitleaks,
 		e.scanDiff,
+		e.blockForAuth,
 	}
 	e.pullChain = []Processor{e.checkRepoInAuthorisedList}
 	e.defaultChain = []Processor{e.checkRepoInAuthorisedList}
 	return e
+}
+
+// serviceUIURL builds the management UI base URL for user-facing links: the
+// configured domains.service when set, otherwise the request's scheme+host with
+// the proxy port swapped for the UI port. Port of getServiceUIURL.
+func (e *Engine) serviceUIURL(r *http.Request) string {
+	if e.cfg != nil && e.cfg.Domains != nil && e.cfg.Domains.Service != nil && *e.cfg.Domains.Service != "" {
+		return *e.cfg.Domains.Service
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if xf := r.Header.Get("X-Forwarded-Proto"); xf != "" {
+		scheme = xf
+	}
+	base := scheme + "://" + r.Host
+	if e.proxyPort != "" && e.uiPort != "" {
+		base = strings.Replace(base, ":"+e.proxyPort, ":"+e.uiPort, 1)
+	}
+	return base
 }
 
 // commitConfig returns the configured commit rules, or nil when none are set.

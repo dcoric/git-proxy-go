@@ -18,10 +18,18 @@ import (
 type fakeStore struct {
 	repoByURL    map[string]*db.Repo
 	usersByEmail map[string][]*db.User
+	pushByID     map[string]*db.Push
 	getErr       error
 	audited      []*db.Push
 	authorised   []string
 	rejected     []string
+}
+
+func (f *fakeStore) GetPush(_ context.Context, id string) (*db.Push, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.pushByID[id], nil
 }
 
 func (f *fakeStore) GetRepoByURL(_ context.Context, url string) (*db.Repo, error) {
@@ -328,7 +336,7 @@ func TestNewEngineRunsCheckRepo(t *testing.T) {
 		repoByURL:    map[string]*db.Repo{url: {Users: db.RepoUsers{CanPush: []string{"bob"}}}},
 		usersByEmail: map[string][]*db.User{"bob@example.com": {{Username: "bob"}}},
 	}
-	e := NewEngine(fs, nil)
+	e := NewEngine(fs, nil, "", "")
 	e.remoteDir = t.TempDir() // avoid touching ./.remote
 	action := e.Execute(rawCtx(body), pushRequest(t))
 	if action.LastStep == nil || action.LastStep.StepName != "pullRemote" {
@@ -345,7 +353,7 @@ func TestNewEngineRunsCheckRepo(t *testing.T) {
 	fs = &fakeStore{}
 	r := httptest.NewRequest(http.MethodPost, "/github.com/finos/git-proxy.git/git-upload-pack", nil)
 	r.Header.Set("Content-Type", "application/x-git-upload-pack-request")
-	action = NewEngine(fs, nil).Execute(context.Background(), r)
+	action = NewEngine(fs, nil, "", "").Execute(context.Background(), r)
 	if !action.Error {
 		t.Error("unauthorised pull should be errored by checkRepoInAuthorisedList")
 	}
