@@ -66,6 +66,9 @@ func NewEngine(store Store, cfg *config.Config) *Engine {
 		e.checkUserPushPermission,
 		e.pullRemote,
 		e.writePack,
+		e.checkHiddenCommits,
+		e.getDiff,
+		e.scanDiff,
 	}
 	e.pullChain = []Processor{e.checkRepoInAuthorisedList}
 	e.defaultChain = []Processor{e.checkRepoInAuthorisedList}
