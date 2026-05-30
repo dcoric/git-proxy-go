@@ -32,6 +32,7 @@ import (
 	"github.com/dcoric/git-proxy-go/internal/db"
 	"github.com/dcoric/git-proxy-go/internal/db/migrations"
 	"github.com/dcoric/git-proxy-go/internal/db/postgres"
+	"github.com/dcoric/git-proxy-go/internal/db/sqlite"
 	"github.com/dcoric/git-proxy-go/internal/giturl"
 	proxygit "github.com/dcoric/git-proxy-go/internal/proxy/git"
 	proxyhttp "github.com/dcoric/git-proxy-go/internal/proxy/http"
@@ -173,7 +174,7 @@ func serveAll(ctx context.Context, servers ...listenServer) error {
 
 // setupSSHServer builds the git-over-SSH server when enabled, loading/generating
 // the host key. Returns nil when SSH is disabled.
-func setupSSHServer(env config.ServerEnv, store *postgres.Store, engine *chain.Engine) (*sshproxy.Server, error) {
+func setupSSHServer(env config.ServerEnv, store db.Store, engine *chain.Engine) (*sshproxy.Server, error) {
 	if !env.SSHEnabled {
 		return nil, nil
 	}
@@ -193,7 +194,7 @@ func setupSSHServer(env config.ServerEnv, store *postgres.Store, engine *chain.E
 // setupGitProxy seeds the authorised repos and builds the git transport proxy
 // handler over the chain engine. Mirrors the Node proxyPreparations + getRouter.
 // It returns the engine too so the SSH server can route into the same chain.
-func setupGitProxy(ctx context.Context, cfg *config.Config, env config.ServerEnv, store *postgres.Store) (http.Handler, *chain.Engine, error) {
+func setupGitProxy(ctx context.Context, cfg *config.Config, env config.ServerEnv, store db.Store) (http.Handler, *chain.Engine, error) {
 	if err := seedAuthorisedRepos(ctx, cfg, store); err != nil {
 		return nil, nil, fmt.Errorf("seed authorised repos: %w", err)
 	}
@@ -208,7 +209,7 @@ func setupGitProxy(ctx context.Context, cfg *config.Config, env config.ServerEnv
 // seedAuthorisedRepos ensures every repo in the config's authorisedList exists
 // in the store, granting admin push/authorise rights on newly created ones
 // (mirrors the default-repo seeding in proxyPreparations).
-func seedAuthorisedRepos(ctx context.Context, cfg *config.Config, store *postgres.Store) error {
+func seedAuthorisedRepos(ctx context.Context, cfg *config.Config, store db.Store) error {
 	repos, err := store.GetRepos(ctx, db.RepoQuery{})
 	if err != nil {
 		return err
@@ -237,7 +238,7 @@ func seedAuthorisedRepos(ctx context.Context, cfg *config.Config, store *postgre
 
 // proxiedHosts returns the distinct upstream hosts of the store's repos — the
 // origins the git proxy recognises (Go port of getAllProxiedHosts).
-func proxiedHosts(ctx context.Context, store *postgres.Store) ([]string, error) {
+func proxiedHosts(ctx context.Context, store db.Store) ([]string, error) {
 	repos, err := store.GetRepos(ctx, db.RepoQuery{})
 	if err != nil {
 		return nil, err
@@ -253,13 +254,11 @@ func proxiedHosts(ctx context.Context, store *postgres.Store) ([]string, error) 
 	return hosts, nil
 }
 
-// setupAuth connects the store, applies migrations, and populates the session +
-// auth wiring on opts. It returns the store so the caller can close it.
-func setupAuth(ctx context.Context, cfg *config.Config, dsn string, opts *proxyhttp.Options) (*postgres.Store, error) {
-	if err := migrations.Up(ctx, dsn); err != nil {
-		return nil, fmt.Errorf("apply migrations: %w", err)
-	}
-	store, err := postgres.Connect(ctx, dsn)
+// setupAuth opens the store (Postgres or SQLite, by DSN scheme), wires the
+// session manager, and populates the auth wiring on opts. It returns the store
+// so the caller can close it.
+func setupAuth(ctx context.Context, cfg *config.Config, dsn string, opts *proxyhttp.Options) (db.Store, error) {
+	store, err := openStore(ctx, cfg, dsn, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -283,14 +282,44 @@ func setupAuth(ctx context.Context, cfg *config.Config, dsn string, opts *proxyh
 		registry.EnableOIDC(strategy)
 	}
 
-	sqlDB := stdlib.OpenDBFromPool(store.Pool())
-	sessions := session.New(sqlDB, sessionLifetime(cfg), cfg.TLSEnabled())
-
 	opts.Store = store
-	opts.Sessions = sessions
 	opts.Auth = registry
 	return store, nil
 }
+
+// openStore opens the configured backend and sets opts.Sessions to a matching
+// session store. Postgres is selected by a postgres:// DSN (and runs the goose
+// migrations); SQLite by a sqlite: DSN (the dev backend, schema applied on
+// connect).
+func openStore(ctx context.Context, cfg *config.Config, dsn string, opts *proxyhttp.Options) (db.Store, error) {
+	switch {
+	case isPostgresDSN(dsn):
+		if err := migrations.Up(ctx, dsn); err != nil {
+			return nil, fmt.Errorf("apply migrations: %w", err)
+		}
+		store, err := postgres.Connect(ctx, dsn)
+		if err != nil {
+			return nil, err
+		}
+		opts.Sessions = session.New(stdlib.OpenDBFromPool(store.Pool()), sessionLifetime(cfg), cfg.TLSEnabled())
+		return store, nil
+	case isSQLiteDSN(dsn):
+		store, err := sqlite.Connect(ctx, strings.TrimPrefix(dsn, "sqlite:"))
+		if err != nil {
+			return nil, err
+		}
+		opts.Sessions = session.NewSQLite(store.DB(), sessionLifetime(cfg), cfg.TLSEnabled())
+		return store, nil
+	default:
+		return nil, fmt.Errorf("unsupported GIT_PROXY_DB_DSN: use a postgres:// or sqlite: DSN")
+	}
+}
+
+func isPostgresDSN(dsn string) bool {
+	return strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://")
+}
+
+func isSQLiteDSN(dsn string) bool { return strings.HasPrefix(dsn, "sqlite:") }
 
 // sessionLifetime converts sessionMaxAgeHours into a duration (0 lets scs use
 // its default).

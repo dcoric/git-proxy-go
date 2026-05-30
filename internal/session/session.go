@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/alexedwards/scs/postgresstore"
+	"github.com/alexedwards/scs/sqlite3store"
 	"github.com/alexedwards/scs/v2"
 )
 
@@ -22,8 +23,21 @@ import (
 // secureCookie should be true when served over HTTPS/behind a TLS-terminating
 // proxy (the equivalent of express-session's secure:"auto" + trust proxy).
 func New(sqlDB *sql.DB, lifetime time.Duration, secureCookie bool) *scs.SessionManager {
-	m := scs.New()
+	m := newManager(lifetime, secureCookie)
 	m.Store = postgresstore.New(sqlDB)
+	return m
+}
+
+// NewSQLite builds a session manager storing sessions in SQLite via sqlDB (the
+// dev backend). The `sessions` table is created by the SQLite store's schema.
+func NewSQLite(sqlDB *sql.DB, lifetime time.Duration, secureCookie bool) *scs.SessionManager {
+	m := newManager(lifetime, secureCookie)
+	m.Store = sqlite3store.New(sqlDB)
+	return m
+}
+
+func newManager(lifetime time.Duration, secureCookie bool) *scs.SessionManager {
+	m := scs.New()
 	if lifetime > 0 {
 		m.Lifetime = lifetime
 	}
