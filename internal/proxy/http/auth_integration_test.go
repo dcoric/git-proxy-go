@@ -35,7 +35,12 @@ import (
 	"github.com/dcoric/git-proxy-go/internal/session"
 )
 
-var testRouter http.Handler
+var (
+	testRouter http.Handler
+	// testStore is exposed for sibling integration tests (e.g. the OIDC route
+	// flow) that build their own router against the same Postgres container.
+	testStore *postgres.Store
+)
 
 func TestMain(m *testing.M) {
 	pool, err := dockertest.NewPool("")
@@ -81,6 +86,7 @@ func TestMain(m *testing.M) {
 		_ = pool.Purge(pg)
 		log.Fatalf("connect store: %v", err)
 	}
+	testStore = store
 	if err := auth.CreateDefaultAdmin(ctx, store); err != nil {
 		_ = pool.Purge(pg)
 		log.Fatalf("seed users: %v", err)
