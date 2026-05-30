@@ -47,7 +47,10 @@ type Engine struct {
 // chain it sits after parsePush/checkEmptyBranch, which prepend it as they land.
 func NewEngine(store Store) *Engine {
 	e := &Engine{store: store}
-	e.pushChain = []Processor{e.checkRepoInAuthorisedList}
+	e.pushChain = []Processor{
+		e.parsePush,
+		e.checkRepoInAuthorisedList,
+	}
 	e.pullChain = []Processor{e.checkRepoInAuthorisedList}
 	e.defaultChain = []Processor{e.checkRepoInAuthorisedList}
 	return e

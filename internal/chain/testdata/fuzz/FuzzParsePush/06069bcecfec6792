@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("0017\x80 b refs/heads/main0000PACK\x00\x00\x00\x02/heads/m\x00\x00\x00\x01")
