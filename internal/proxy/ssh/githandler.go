@@ -46,21 +46,22 @@ type chainExecutor interface {
 //
 // Pulls (clone/fetch) run the pull chain (authorisation) then proxy the fetch.
 // Pushes relay the upstream ref advertisement, buffer the client's pack, run the
-// push chain, and forward the pack only if the chain approves it.
+// push chain, and forward the pack only if the chain approves it. For pushes the
+// handler also puts the client's forwarded-agent credentials on the chain
+// context (SSHCloneAuth) so the chain's pullRemote step clones over SSH (#105).
 //
-// NOTE: the push chain's pullRemote step currently clones over HTTPS with basic
-// auth, which an SSH-originated request lacks, so SSH pushes are intercepted and
-// evaluated but rejected at pullRemote until an SSH clone variant (PullRemoteSSH)
-// lands. Live byte-level proxying is validated by the P5-6 interop gate.
+// Live byte-level proxying is validated by the P5-6 interop gate.
 type ProxyHandler struct {
 	engine   chainExecutor
 	upstream Upstream
+	hostKey  ssh.HostKeyCallback
 }
 
-// NewProxyHandler builds the SSH git handler from the chain engine and an
-// upstream dialer.
-func NewProxyHandler(engine chainExecutor, upstream Upstream) *ProxyHandler {
-	return &ProxyHandler{engine: engine, upstream: upstream}
+// NewProxyHandler builds the SSH git handler from the chain engine, an upstream
+// dialer, and the host-key callback used to verify the upstream when the chain
+// clones over SSH.
+func NewProxyHandler(engine chainExecutor, upstream Upstream, hostKey ssh.HostKeyCallback) *ProxyHandler {
+	return &ProxyHandler{engine: engine, upstream: upstream, hostKey: hostKey}
 }
 
 // Handle routes a parsed git command through the chain and (if approved) the
@@ -94,7 +95,8 @@ func (h *ProxyHandler) Handle(ctx context.Context, req GitRequest) (uint32, erro
 // handlePull authorises a fetch/clone via the pull chain, then proxies the
 // upload-pack stream bidirectionally between client and upstream.
 func (h *ProxyHandler) handlePull(ctx context.Context, req GitRequest, host, remoteCommand string, ag agent.ExtendedAgent) (uint32, error) {
-	action := h.engine.Execute(ctx, chainRequest(ctx, req.Op, req.RepoPath, nil))
+	r := chainRequest(ctx, req.Op, req.RepoPath, nil)
+	action := h.engine.Execute(r.Context(), r)
 	if action.Error || action.Blocked {
 		writeClientError(req.Channel, blockMessage(action))
 		return 1, nil
@@ -148,7 +150,15 @@ func (h *ProxyHandler) handlePush(ctx context.Context, req GitRequest, host, rem
 		return 0, nil // client disconnected without pushing
 	}
 
-	action := h.engine.Execute(ctx, chainRequest(ctx, req.Op, req.RepoPath, pack))
+	// Give the chain the forwarded-agent credentials so its pullRemote step
+	// clones over SSH as the client (#105), then run the push chain on the pack.
+	cloneCtx := chain.WithSSHCloneAuth(ctx, &chain.SSHCloneAuth{
+		User:    "git",
+		Signers: ag.Signers,
+		HostKey: h.hostKey,
+	})
+	r := chainRequest(cloneCtx, req.Op, req.RepoPath, pack)
+	action := h.engine.Execute(r.Context(), r)
 	if action.Error || action.Blocked {
 		writeClientError(req.Channel, blockMessage(action))
 		return 1, nil

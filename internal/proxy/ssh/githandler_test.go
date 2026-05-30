@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"testing"
@@ -50,19 +51,28 @@ func (c *fakeChannel) outBytes() []byte {
 	return append([]byte(nil), c.out.Bytes()...)
 }
 
-// fakeEngine records the synthesised request and returns a canned action.
+// fakeEngine records the synthesised request and returns a canned action. It
+// reads RawBody/SSHCloneAuth from the ctx Execute is called with (not the
+// request's), so the tests verify the handler hands the chain a context that
+// actually carries the pack and clone credentials.
 type fakeEngine struct {
-	action  *chain.Action
-	gotReq  *http.Request
-	gotBody []byte
-	called  bool
+	action     *chain.Action
+	gotReq     *http.Request
+	gotBody    []byte
+	gotSSHAuth *chain.SSHCloneAuth
+	hasSSHAuth bool
+	called     bool
 }
 
-func (e *fakeEngine) Execute(_ context.Context, r *http.Request) *chain.Action {
+func (e *fakeEngine) Execute(ctx context.Context, r *http.Request) *chain.Action {
 	e.called = true
 	e.gotReq = r
-	if b, ok := chain.RawBody(r.Context()); ok {
+	if b, ok := chain.RawBody(ctx); ok {
 		e.gotBody = b
+	}
+	if auth, ok := chain.SSHCloneAuthFromContext(ctx); ok {
+		e.gotSSHAuth = auth
+		e.hasSSHAuth = true
 	}
 	return e.action
 }
@@ -100,12 +110,18 @@ type nopCloser struct{}
 
 func (nopCloser) Close() error { return nil }
 
-// forwardingRequest builds a GitRequest with agent forwarding satisfied.
+// stubHostKey is a non-nil host-key callback for handler tests (the fake engine
+// never clones, so it is not invoked).
+func stubHostKey(string, net.Addr, ssh.PublicKey) error { return nil }
+
+// forwardingRequest builds a GitRequest with agent forwarding satisfied by an
+// in-memory keyring (a real ExtendedAgent so the handler can read its Signers).
 func forwardingRequest(op, repoPath string, ch ssh.Channel) GitRequest {
+	ag := agent.NewKeyring().(agent.ExtendedAgent)
 	return GitRequest{
 		Op: op, RepoPath: repoPath, Username: "alice", Channel: ch,
 		AgentForwarding: true,
-		OpenAgent:       func() (agent.ExtendedAgent, io.Closer, error) { return nil, nopCloser{}, nil },
+		OpenAgent:       func() (agent.ExtendedAgent, io.Closer, error) { return ag, nopCloser{}, nil },
 	}
 }
 
@@ -129,7 +145,7 @@ func blockedAction() *chain.Action {
 func TestHandleRequiresAgentForwarding(t *testing.T) {
 	engine := &fakeEngine{action: okAction()}
 	up := &fakeUpstream{}
-	h := NewProxyHandler(engine, up)
+	h := NewProxyHandler(engine, up, stubHostKey)
 	ch := newFakeChannel(nil)
 
 	req := GitRequest{Op: "upload-pack", RepoPath: "github.com/org/repo.git", Channel: ch, AgentForwarding: false}
@@ -151,7 +167,7 @@ func TestHandleRequiresAgentForwarding(t *testing.T) {
 func TestHandlePullBlocked(t *testing.T) {
 	engine := &fakeEngine{action: blockedAction()}
 	up := &fakeUpstream{}
-	h := NewProxyHandler(engine, up)
+	h := NewProxyHandler(engine, up, stubHostKey)
 	ch := newFakeChannel(nil)
 
 	status, err := h.Handle(context.Background(), forwardingRequest("upload-pack", "github.com/org/repo.git", ch))
@@ -179,7 +195,7 @@ func TestHandlePullBlocked(t *testing.T) {
 func TestHandlePullProxiesWhenAllowed(t *testing.T) {
 	engine := &fakeEngine{action: okAction()}
 	up := &fakeUpstream{stdout: []byte("PACK-from-upstream")}
-	h := NewProxyHandler(engine, up)
+	h := NewProxyHandler(engine, up, stubHostKey)
 	ch := newFakeChannel([]byte("0032want ...\n0000")) // client fetch request
 
 	status, err := h.Handle(context.Background(), forwardingRequest("upload-pack", "github.com/org/repo.git", ch))
@@ -206,7 +222,7 @@ func TestHandlePushBlockedNotForwarded(t *testing.T) {
 
 	engine := &fakeEngine{action: blockedAction()}
 	up := &fakeUpstream{stdout: refAdvertisement()}
-	h := NewProxyHandler(engine, up)
+	h := NewProxyHandler(engine, up, stubHostKey)
 	ch := newFakeChannel(client)
 
 	status, err := h.Handle(context.Background(), forwardingRequest("receive-pack", "github.com/org/repo.git", ch))
@@ -240,7 +256,7 @@ func TestHandlePushForwardsWhenAllowed(t *testing.T) {
 
 	engine := &fakeEngine{action: okAction()}
 	up := &fakeUpstream{stdout: append(append([]byte(nil), caps...), report...)}
-	h := NewProxyHandler(engine, up)
+	h := NewProxyHandler(engine, up, stubHostKey)
 	ch := newFakeChannel(client)
 
 	status, err := h.Handle(context.Background(), forwardingRequest("receive-pack", "github.com/org/repo.git", ch))
@@ -252,6 +268,19 @@ func TestHandlePushForwardsWhenAllowed(t *testing.T) {
 	}
 	if up.command != "git-receive-pack '/org/repo.git'" {
 		t.Errorf("upstream command = %q", up.command)
+	}
+	// The chain must receive the pack on the ctx it is executed with (the bug
+	// fix: previously Execute got a context without the RawBody).
+	if !bytes.Equal(engine.gotBody, client) {
+		t.Errorf("chain RawBody = %q, want %q", engine.gotBody, client)
+	}
+	// The forwarded-agent credentials must reach the chain so pullRemote can
+	// clone over SSH (#105).
+	if !engine.hasSSHAuth {
+		t.Fatal("SSHCloneAuth not placed on the chain context")
+	}
+	if engine.gotSSHAuth.User != "git" || engine.gotSSHAuth.Signers == nil || engine.gotSSHAuth.HostKey == nil {
+		t.Errorf("SSHCloneAuth incomplete: %+v", engine.gotSSHAuth)
 	}
 	// The approved pack (everything the client sent after the caps) is forwarded.
 	if !bytes.Contains(up.stdin.Bytes(), []byte("PACK-client-data")) {

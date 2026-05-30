@@ -186,7 +186,7 @@ func setupSSHServer(env config.ServerEnv, store *postgres.Store, engine *chain.E
 	// against the known hosts (P5-3).
 	knownHosts := sshproxy.NewKnownHosts(env.SSHKnownHosts)
 	upstream := sshproxy.NewSSHUpstream(knownHosts.Callback())
-	handler := sshproxy.NewProxyHandler(engine, upstream)
+	handler := sshproxy.NewProxyHandler(engine, upstream, knownHosts.Callback())
 	return sshproxy.NewServer(net.JoinHostPort("", env.SSHPort), hostKey, store, handler), nil
 }
 

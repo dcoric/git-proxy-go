@@ -52,6 +52,12 @@ type Engine struct {
 	// hookFilePath default); overridable in tests.
 	preReceiveHook string
 
+	// cloneHTTPS / cloneSSH are the network-clone implementations pullRemote
+	// dispatches to (HTTPS basic auth vs SSH forwarded agent). They default to
+	// the git engine and are overridable in tests.
+	cloneHTTPS cloneHTTPSFunc
+	cloneSSH   cloneSSHFunc
+
 	pushChain    []Processor
 	pullChain    []Processor
 	defaultChain []Processor
