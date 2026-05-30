@@ -19,6 +19,12 @@ type ServerEnv struct {
 	HTTPSGitServerPort string
 	// UIHost is the externally reachable UI host, used to build redirect URLs.
 	UIHost string
+
+	// SSHEnabled turns on the git-over-SSH server (P5). SSHPort is its listener;
+	// SSHHostKeyPath is where the proxy's SSH host key is loaded/generated.
+	SSHEnabled     bool
+	SSHPort        string
+	SSHHostKeyPath string
 }
 
 // LoadServerEnv reads the listener configuration from the environment, applying
@@ -30,6 +36,9 @@ func LoadServerEnv() ServerEnv {
 		GitServerPort:      envOr("GIT_PROXY_SERVER_PORT", "8000"),
 		HTTPSGitServerPort: envOr("GIT_PROXY_HTTPS_SERVER_PORT", "8443"),
 		UIHost:             envOr("GIT_PROXY_UI_HOST", "http://localhost"),
+		SSHEnabled:         os.Getenv("GIT_PROXY_SSH_ENABLED") == "true",
+		SSHPort:            envOr("GIT_PROXY_SSH_PORT", "2222"),
+		SSHHostKeyPath:     envOr("GIT_PROXY_SSH_HOST_KEY_PATH", ".ssh/proxy_host_key"),
 	}
 }
 

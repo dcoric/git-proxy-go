@@ -35,6 +35,7 @@ import (
 	"github.com/dcoric/git-proxy-go/internal/giturl"
 	proxygit "github.com/dcoric/git-proxy-go/internal/proxy/git"
 	proxyhttp "github.com/dcoric/git-proxy-go/internal/proxy/http"
+	sshproxy "github.com/dcoric/git-proxy-go/internal/proxy/ssh"
 	"github.com/dcoric/git-proxy-go/internal/session"
 )
 
@@ -75,6 +76,7 @@ func run() error {
 	// serves the management healthcheck (P1 behaviour); the git proxy needs the
 	// store (for the chain's repo lookups and audit) so it is gated likewise.
 	var gitHandler http.Handler
+	var sshServer *sshproxy.Server
 	if dsn := os.Getenv("GIT_PROXY_DB_DSN"); dsn != "" {
 		store, err := setupAuth(ctx, cfg, dsn, &opts)
 		if err != nil {
@@ -83,6 +85,11 @@ func run() error {
 		defer store.Close()
 
 		gitHandler, err = setupGitProxy(ctx, cfg, env, store)
+		if err != nil {
+			return err
+		}
+
+		sshServer, err = setupSSHServer(env, store)
 		if err != nil {
 			return err
 		}
@@ -100,7 +107,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	servers := []*proxyhttp.Servers{mgmtServers}
+	servers := []listenServer{mgmtServers}
 
 	if gitHandler != nil {
 		git := proxyhttp.Listeners{HTTPAddr: net.JoinHostPort("", env.GitServerPort)}
@@ -115,6 +122,9 @@ func run() error {
 		}
 		servers = append(servers, gitServers)
 	}
+	if sshServer != nil {
+		servers = append(servers, sshServer)
+	}
 
 	slog.Info("git-proxy-go starting",
 		"version", version,
@@ -122,6 +132,7 @@ func run() error {
 		"tls", cfg.TLSEnabled(),
 		"auth", opts.Store != nil,
 		"git_proxy", gitHandler != nil,
+		"ssh", sshServer != nil,
 	)
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -129,15 +140,20 @@ func run() error {
 	return serveAll(sigCtx, servers...)
 }
 
+// listenServer is a long-running listener that serves until ctx is cancelled
+// (the management/git HTTP servers and the SSH server).
+type listenServer interface {
+	Serve(ctx context.Context) error
+}
+
 // serveAll runs every server until ctx is cancelled (or one fails), returning
-// the first non-shutdown error. Each Servers.Serve shuts itself down on ctx
-// cancellation.
-func serveAll(ctx context.Context, servers ...*proxyhttp.Servers) error {
+// the first non-shutdown error. Each server shuts itself down on ctx cancellation.
+func serveAll(ctx context.Context, servers ...listenServer) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(servers))
 	for _, s := range servers {
 		wg.Add(1)
-		go func(s *proxyhttp.Servers) {
+		go func(s listenServer) {
 			defer wg.Done()
 			errCh <- s.Serve(ctx)
 		}(s)
@@ -152,6 +168,21 @@ func serveAll(ctx context.Context, servers ...*proxyhttp.Servers) error {
 		}
 	}
 	return first
+}
+
+// setupSSHServer builds the git-over-SSH server when enabled, loading/generating
+// the host key. Returns nil when SSH is disabled.
+func setupSSHServer(env config.ServerEnv, store *postgres.Store) (*sshproxy.Server, error) {
+	if !env.SSHEnabled {
+		return nil, nil
+	}
+	hostKey, err := sshproxy.EnsureHostKey(env.SSHHostKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("ssh host key: %w", err)
+	}
+	// The GitHandler (routing the parsed command through the chain) lands in
+	// P5-2; until then SSH authenticates and parses commands but does not proxy.
+	return sshproxy.NewServer(net.JoinHostPort("", env.SSHPort), hostKey, store, nil), nil
 }
 
 // setupGitProxy seeds the authorised repos and builds the git transport proxy
