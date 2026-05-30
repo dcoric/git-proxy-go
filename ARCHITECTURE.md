@@ -111,12 +111,16 @@ The live SSH interop matrix is a staging gate
 
 - **Auth** (`internal/auth`): a strategy registry — local bcrypt, JWT
   (JWKS-verified, role mapping), and OIDC (go-oidc discovery + provisioning).
-  Sessions use `scs` over the Postgres `sessions` table; mutating routes are
+  Sessions use `scs` over the database `sessions` table; mutating routes are
   CSRF-protected (double-submit cookie). API route groups are JWT-guarded.
-- **Persistence** (`internal/db`): Postgres only. Queries are sqlc-generated
-  (`pgx`); migrations are embedded goose SQL. The `pushes` table doubles as the
-  audit trail (JSONB payload + promoted scalar columns). Legacy NeDB/Mongo data
-  is imported once by `cmd/migrate-data`.
+- **Persistence** (`internal/db`): a `Store` interface with two backends —
+  **Postgres** for production (`internal/db/postgres`, sqlc-generated `pgx`
+  queries, embedded goose migrations) and **SQLite** for local dev/tests
+  (`internal/db/sqlite`, pure-Go `modernc.org/sqlite`, schema applied on connect;
+  D-4). The backend is chosen by the `GIT_PROXY_DB_DSN` scheme (`postgres://` vs
+  `sqlite:`). The `pushes` table doubles as the audit trail (a JSON payload +
+  promoted scalar columns for filtering). Legacy NeDB/Mongo data is imported once
+  by `cmd/migrate-data`.
 
 ## Config (`internal/config`)
 
@@ -139,8 +143,9 @@ serves only the management healthcheck.
 
 ## Porting notes (deviations from Node / PR #1332)
 
-- **Postgres only** — Mongo and NeDB are dropped (migrate-data imports legacy
-  data once). The config `sink` field is a Node artifact.
+- **Postgres (prod) + SQLite (dev)** — Mongo and NeDB are dropped (migrate-data
+  imports legacy data once); a pure-Go SQLite backend (D-4) runs the proxy
+  without Postgres for local dev/tests. The config `sink` field is a Node artifact.
 - **Hybrid git engine** — go-git clone + git binary, vs Node's `isomorphic-git`
   / `simple-git` usage.
 - **SSH on `x/crypto/ssh`** — replaces Node's `ssh2`. Agent forwarding uses the
