@@ -6,12 +6,14 @@ package ssh
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"regexp"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/dcoric/git-proxy-go/internal/db"
 )
@@ -30,6 +32,13 @@ type GitRequest struct {
 	RepoPath string
 	Username string
 	Channel  ssh.Channel
+
+	// AgentForwarding reports whether the client forwarded its SSH agent (so the
+	// handler can authenticate to the upstream as the client). OpenAgent opens
+	// that forwarded agent; it is non-nil only when AgentForwarding is true and
+	// the caller must Close the returned io.Closer.
+	AgentForwarding bool
+	OpenAgent       func() (agent.ExtendedAgent, io.Closer, error)
 }
 
 // GitHandler runs a parsed git command (routing it through the chain and
@@ -123,7 +132,7 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 	}
 	defer func() { _ = sshConn.Close() }()
 
-	username := sshConn.Permissions.Extensions[permUsernameKey]
+	cs := &connState{conn: sshConn, username: sshConn.Permissions.Extensions[permUsernameKey]}
 	go ssh.DiscardRequests(reqs)
 
 	for newChan := range chans {
@@ -136,14 +145,26 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 			slog.Error("ssh: channel accept failed", "err", err)
 			continue
 		}
-		go s.handleSession(ctx, ch, chReqs, username)
+		go s.handleSession(ctx, cs, ch, chReqs)
 	}
 }
 
-// handleSession services a session channel: one git command per session.
-func (s *Server) handleSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request, username string) {
+// connState carries per-connection context across a session's requests.
+type connState struct {
+	conn            *ssh.ServerConn
+	username        string
+	agentForwarding bool
+}
+
+// handleSession services a session channel: one git command per session. It
+// also honours an agent-forwarding request (P5-4) so the git command can
+// authenticate to the upstream as the client.
+func (s *Server) handleSession(ctx context.Context, cs *connState, ch ssh.Channel, reqs <-chan *ssh.Request) {
 	for req := range reqs {
 		switch req.Type {
+		case agentRequestType:
+			cs.agentForwarding = true
+			_ = req.Reply(true, nil)
 		case "exec":
 			var payload struct{ Command string }
 			if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
@@ -152,24 +173,31 @@ func (s *Server) handleSession(ctx context.Context, ch ssh.Channel, reqs <-chan 
 				return
 			}
 			_ = req.Reply(true, nil)
-			s.handleExec(ctx, ch, payload.Command, username)
+			s.handleExec(ctx, cs, ch, payload.Command)
 			return
 		default:
-			// shell/pty-req/env/auth-agent (agent forwarding lands in P5-4) etc.
+			// shell/pty-req/env etc. are unsupported (one git command per session).
 			_ = req.Reply(false, nil)
 		}
 	}
 }
 
-func (s *Server) handleExec(ctx context.Context, ch ssh.Channel, command, username string) {
+func (s *Server) handleExec(ctx context.Context, cs *connState, ch ssh.Channel, command string) {
 	op, repoPath, err := parseGitCommand(command)
 	if err != nil {
 		writeExit(ch, 1, err.Error())
 		return
 	}
-	status, err := s.handler.Handle(ctx, GitRequest{Op: op, RepoPath: repoPath, Username: username, Channel: ch})
+	req := GitRequest{
+		Op: op, RepoPath: repoPath, Username: cs.username, Channel: ch,
+		AgentForwarding: cs.agentForwarding,
+	}
+	if cs.agentForwarding {
+		req.OpenAgent = func() (agent.ExtendedAgent, io.Closer, error) { return openForwardedAgent(cs.conn) }
+	}
+	status, err := s.handler.Handle(ctx, req)
 	if err != nil {
-		slog.Error("ssh: git command failed", "op", op, "repo", repoPath, "user", username, "err", err)
+		slog.Error("ssh: git command failed", "op", op, "repo", repoPath, "user", cs.username, "err", err)
 	}
 	sendExitStatus(ch, status)
 	_ = ch.Close()
