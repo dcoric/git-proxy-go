@@ -65,6 +65,9 @@ func run() error {
 		RateLimitBurst:  cfg.RateLimitBurst(),
 		CSRFProtection:  cfg.CSRFProtection != nil && *cfg.CSRFProtection,
 		OIDCRedirectURL: fmt.Sprintf("%s:%s/dashboard/profile", env.UIHost, env.UIPort),
+		Config:          cfg,
+		UIPort:          env.UIPort,
+		GitProxyPort:    env.GitServerPort,
 	}
 
 	// Wire the Postgres-backed session + auth routes, and the git transport

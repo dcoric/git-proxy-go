@@ -165,12 +165,14 @@ func unmarshalPush(data []byte) (*db.Push, error) {
 
 // CreateRepo inserts a repo and returns it with its assigned id.
 func (s *Store) CreateRepo(ctx context.Context, repo *db.Repo) (*db.Repo, error) {
+	// The canPush/canAuthorise columns are NOT NULL; a new repo starts with
+	// empty access lists (matching the Node default of empty arrays).
 	row, err := s.q.CreateRepo(ctx, sqlc.CreateRepoParams{
 		Project:      repo.Project,
 		Name:         repo.Name,
 		Url:          repo.URL,
-		CanPush:      repo.Users.CanPush,
-		CanAuthorise: repo.Users.CanAuthorise,
+		CanPush:      orEmpty(repo.Users.CanPush),
+		CanAuthorise: orEmpty(repo.Users.CanAuthorise),
 	})
 	if err != nil {
 		return nil, err
@@ -354,4 +356,13 @@ func userFromRow(u sqlc.User) *db.User {
 		DisplayName: u.DisplayName,
 		Title:       u.Title,
 	}
+}
+
+// orEmpty returns s, or an empty (non-nil) slice when s is nil, so NOT NULL
+// array columns are never sent a NULL.
+func orEmpty(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
