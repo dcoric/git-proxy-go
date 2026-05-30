@@ -26,6 +26,22 @@ builds:
       - amd64
       - arm64
 
+  - id: git-proxy-cli
+    main: ./cmd/git-proxy-cli
+    binary: git-proxy-cli
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
   - id: migrate-data
     main: ./cmd/migrate-data
     binary: migrate-data
@@ -46,6 +62,7 @@ archives:
   - id: default
     ids:
       - git-proxy
+      - git-proxy-cli
       - migrate-data
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
