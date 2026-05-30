@@ -11,15 +11,18 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dcoric/git-proxy-go/internal/config"
+	"github.com/dcoric/git-proxy-go/internal/config/generated"
 	"github.com/dcoric/git-proxy-go/internal/db"
 	"github.com/dcoric/git-proxy-go/internal/giturl"
 )
 
 // Store is the slice of the persistence layer the chain needs: repo lookup for
-// parseAction, audit writes, and the authorise/reject calls behind auto
-// actions. db.Store satisfies it.
+// parseAction/permission checks, the user lookup for push permissions, audit
+// writes, and the authorise/reject calls behind auto actions. db.Store satisfies it.
 type Store interface {
 	GetRepoByURL(ctx context.Context, url string) (*db.Repo, error)
+	GetUsers(ctx context.Context, q db.UserQuery) ([]*db.User, error)
 	WriteAudit(ctx context.Context, p *db.Push) error
 	Authorise(ctx context.Context, id string, attestation *db.Attestation) (string, error)
 	Reject(ctx context.Context, id string, rejection db.Rejection) (string, error)
@@ -36,24 +39,38 @@ type Processor func(ctx context.Context, r *http.Request, a *Action) (*Action, e
 // only checkRepoInAuthorisedList (P4-3).
 type Engine struct {
 	store Store
+	cfg   *config.Config
 
 	pushChain    []Processor
 	pullChain    []Processor
 	defaultChain []Processor
 }
 
-// NewEngine builds the production engine over store and wires the processor
-// chains. Today only checkRepoInAuthorisedList is ported; in the Node push
-// chain it sits after parsePush/checkEmptyBranch, which prepend it as they land.
-func NewEngine(store Store) *Engine {
-	e := &Engine{store: store}
+// NewEngine builds the production engine over store and config, and wires the
+// processor chains. The push chain mirrors the Node order up to (but not
+// including) pullRemote; the clone/post-clone processors are appended as they
+// land (#46–#54).
+func NewEngine(store Store, cfg *config.Config) *Engine {
+	e := &Engine{store: store, cfg: cfg}
 	e.pushChain = []Processor{
 		e.parsePush,
+		e.checkEmptyBranch,
 		e.checkRepoInAuthorisedList,
+		e.checkCommitMessages,
+		e.checkAuthorEmails,
+		e.checkUserPushPermission,
 	}
 	e.pullChain = []Processor{e.checkRepoInAuthorisedList}
 	e.defaultChain = []Processor{e.checkRepoInAuthorisedList}
 	return e
+}
+
+// commitConfig returns the configured commit rules, or nil when none are set.
+func (e *Engine) commitConfig() *generated.CommitConfig {
+	if e.cfg == nil {
+		return nil
+	}
+	return e.cfg.CommitConfig
 }
 
 // Execute runs the full chain for a request and returns the resulting action.
