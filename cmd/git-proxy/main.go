@@ -84,12 +84,13 @@ func run() error {
 		}
 		defer store.Close()
 
-		gitHandler, err = setupGitProxy(ctx, cfg, env, store)
+		var engine *chain.Engine
+		gitHandler, engine, err = setupGitProxy(ctx, cfg, env, store)
 		if err != nil {
 			return err
 		}
 
-		sshServer, err = setupSSHServer(env, store)
+		sshServer, err = setupSSHServer(env, store, engine)
 		if err != nil {
 			return err
 		}
@@ -172,7 +173,7 @@ func serveAll(ctx context.Context, servers ...listenServer) error {
 
 // setupSSHServer builds the git-over-SSH server when enabled, loading/generating
 // the host key. Returns nil when SSH is disabled.
-func setupSSHServer(env config.ServerEnv, store *postgres.Store) (*sshproxy.Server, error) {
+func setupSSHServer(env config.ServerEnv, store *postgres.Store, engine *chain.Engine) (*sshproxy.Server, error) {
 	if !env.SSHEnabled {
 		return nil, nil
 	}
@@ -180,23 +181,28 @@ func setupSSHServer(env config.ServerEnv, store *postgres.Store) (*sshproxy.Serv
 	if err != nil {
 		return nil, fmt.Errorf("ssh host key: %w", err)
 	}
-	// The GitHandler (routing the parsed command through the chain) lands in
-	// P5-2; until then SSH authenticates and parses commands but does not proxy.
-	return sshproxy.NewServer(net.JoinHostPort("", env.SSHPort), hostKey, store, nil), nil
+	// Route parsed git commands through the same chain as the HTTP proxy (P5-2),
+	// forwarding approved traffic upstream over SSH with host-key verification
+	// against the known hosts (P5-3).
+	knownHosts := sshproxy.NewKnownHosts(env.SSHKnownHosts)
+	upstream := sshproxy.NewSSHUpstream(knownHosts.Callback())
+	handler := sshproxy.NewProxyHandler(engine, upstream)
+	return sshproxy.NewServer(net.JoinHostPort("", env.SSHPort), hostKey, store, handler), nil
 }
 
 // setupGitProxy seeds the authorised repos and builds the git transport proxy
 // handler over the chain engine. Mirrors the Node proxyPreparations + getRouter.
-func setupGitProxy(ctx context.Context, cfg *config.Config, env config.ServerEnv, store *postgres.Store) (http.Handler, error) {
+// It returns the engine too so the SSH server can route into the same chain.
+func setupGitProxy(ctx context.Context, cfg *config.Config, env config.ServerEnv, store *postgres.Store) (http.Handler, *chain.Engine, error) {
 	if err := seedAuthorisedRepos(ctx, cfg, store); err != nil {
-		return nil, fmt.Errorf("seed authorised repos: %w", err)
+		return nil, nil, fmt.Errorf("seed authorised repos: %w", err)
 	}
 	origins, err := proxiedHosts(ctx, store)
 	if err != nil {
-		return nil, fmt.Errorf("list proxied hosts: %w", err)
+		return nil, nil, fmt.Errorf("list proxied hosts: %w", err)
 	}
 	engine := chain.NewEngine(store, cfg, env.UIPort, env.GitServerPort)
-	return proxygit.NewHandler(engine, origins), nil
+	return proxygit.NewHandler(engine, origins), engine, nil
 }
 
 // seedAuthorisedRepos ensures every repo in the config's authorisedList exists

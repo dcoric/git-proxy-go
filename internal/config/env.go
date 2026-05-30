@@ -3,7 +3,10 @@
 
 package config
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 // ServerEnv holds the listener ports and UI host, sourced from environment
 // variables. It mirrors serverConfig in src/config/env.ts; the values are not
@@ -25,6 +28,9 @@ type ServerEnv struct {
 	SSHEnabled     bool
 	SSHPort        string
 	SSHHostKeyPath string
+	// SSHKnownHosts overrides/extends the built-in upstream host-key fingerprints
+	// (github.com/gitlab.com), as comma-separated "host=SHA256:..." entries.
+	SSHKnownHosts map[string]string
 }
 
 // LoadServerEnv reads the listener configuration from the environment, applying
@@ -39,7 +45,27 @@ func LoadServerEnv() ServerEnv {
 		SSHEnabled:         os.Getenv("GIT_PROXY_SSH_ENABLED") == "true",
 		SSHPort:            envOr("GIT_PROXY_SSH_PORT", "2222"),
 		SSHHostKeyPath:     envOr("GIT_PROXY_SSH_HOST_KEY_PATH", ".ssh/proxy_host_key"),
+		SSHKnownHosts:      parseKnownHosts(os.Getenv("GIT_PROXY_SSH_KNOWN_HOSTS")),
 	}
+}
+
+// parseKnownHosts parses comma-separated "host=SHA256:..." entries into a map,
+// skipping malformed ones.
+func parseKnownHosts(raw string) map[string]string {
+	if raw == "" {
+		return nil
+	}
+	hosts := make(map[string]string)
+	for _, entry := range strings.Split(raw, ",") {
+		host, fp, ok := strings.Cut(strings.TrimSpace(entry), "=")
+		if ok && host != "" && fp != "" {
+			hosts[host] = fp
+		}
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	return hosts
 }
 
 func envOr(key, fallback string) string {
