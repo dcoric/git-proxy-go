@@ -11,6 +11,8 @@ import (
 
 	gogit "github.com/go-git/go-git/v5"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"golang.org/x/crypto/ssh"
 )
 
 // Clone performs a clone of url into dir using go-git (the network-clone half of
@@ -27,6 +29,28 @@ func Clone(ctx context.Context, url, dir, username, password string, depth int) 
 		Depth: depth,
 	}); err != nil {
 		return fmt.Errorf("git clone %s: %w", url, err)
+	}
+	return nil
+}
+
+// CloneSSH performs a clone of url (an scp-like "git@host:path" or "ssh://"
+// address) into dir over SSH, authenticating with the client's forwarded agent
+// (signers) and verifying the upstream host key (hostKey). It is the SSH
+// counterpart of Clone for SSH-originated pushes (issue #105 / PR #1332's
+// PullRemoteSSH), keeping the network clone on go-git per the hybrid-engine
+// decision. depth > 0 makes the clone shallow.
+func CloneSSH(ctx context.Context, url, dir, user string, signers func() ([]ssh.Signer, error), hostKey ssh.HostKeyCallback, depth int) error {
+	if user == "" {
+		user = "git"
+	}
+	auth := &gitssh.PublicKeysCallback{User: user, Callback: signers}
+	auth.HostKeyCallback = hostKey
+	if _, err := gogit.PlainCloneContext(ctx, dir, false, &gogit.CloneOptions{
+		URL:   url,
+		Auth:  auth,
+		Depth: depth,
+	}); err != nil {
+		return fmt.Errorf("git clone (ssh) %s: %w", url, err)
 	}
 	return nil
 }
