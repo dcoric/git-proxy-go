@@ -40,18 +40,23 @@ type Processor func(ctx context.Context, r *http.Request, a *Action) (*Action, e
 type Engine struct {
 	store Store
 	cfg   *config.Config
+	// remoteDir is the base directory for per-push clones (Node's ./.remote).
+	remoteDir string
 
 	pushChain    []Processor
 	pullChain    []Processor
 	defaultChain []Processor
 }
 
+// remoteDirDefault is the default per-push clone base directory (Node ./.remote).
+const remoteDirDefault = ".remote"
+
 // NewEngine builds the production engine over store and config, and wires the
 // processor chains. The push chain mirrors the Node order up to (but not
 // including) pullRemote; the clone/post-clone processors are appended as they
 // land (#46–#54).
 func NewEngine(store Store, cfg *config.Config) *Engine {
-	e := &Engine{store: store, cfg: cfg}
+	e := &Engine{store: store, cfg: cfg, remoteDir: remoteDirDefault}
 	e.pushChain = []Processor{
 		e.parsePush,
 		e.checkEmptyBranch,
@@ -59,6 +64,8 @@ func NewEngine(store Store, cfg *config.Config) *Engine {
 		e.checkCommitMessages,
 		e.checkAuthorEmails,
 		e.checkUserPushPermission,
+		e.pullRemote,
+		e.writePack,
 	}
 	e.pullChain = []Processor{e.checkRepoInAuthorisedList}
 	e.defaultChain = []Processor{e.checkRepoInAuthorisedList}
@@ -100,11 +107,10 @@ func (e *Engine) Execute(ctx context.Context, r *http.Request) *Action {
 		action.ErrorMessage = &msg
 	}
 
-	// Clean up a bare clone if one was created. Node tracks this with a
-	// checkoutCleanUpRequired flag set when pullRemote ran; keying off
-	// proxyGitPath (which pullRemote sets) is behaviourally equivalent and
-	// avoids comparing function identities.
-	if action.ProxyGitPath != "" {
+	// Clean up the bare clone, but only when pullRemote actually created one
+	// (action.cleanupClone), mirroring the Node checkoutCleanUpRequired flag —
+	// the concurrent-request and clone-failure paths must not delete a folder.
+	if action.cleanupClone {
 		action = e.clearBareClone(action)
 	}
 

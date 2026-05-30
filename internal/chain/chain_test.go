@@ -319,17 +319,23 @@ func TestCheckRepoInAuthorisedList(t *testing.T) {
 func TestNewEngineRunsCheckRepo(t *testing.T) {
 	const url = "https://github.com/finos/git-proxy.git"
 
-	// A fully valid push passes the whole pre-clone chain and is audited. The
-	// committer (Bob) must be a known user on the repo's canPush list.
+	// A valid push (committer Bob on canPush) passes every validator; the chain
+	// then reaches pullRemote, which errors because pushRequest carries no auth
+	// header — confirming the full pre-clone chain ran and was wired in order.
 	body := buildReceivePack(t, "2222222222222222222222222222222222222222",
 		"1111111111111111111111111111111111111111", "refs/heads/main", sampleCommit("abc123"))
 	fs := &fakeStore{
 		repoByURL:    map[string]*db.Repo{url: {Users: db.RepoUsers{CanPush: []string{"bob"}}}},
 		usersByEmail: map[string][]*db.User{"bob@example.com": {{Username: "bob"}}},
 	}
-	action := NewEngine(fs, nil).Execute(rawCtx(body), pushRequest(t))
-	if action.Error || action.Blocked {
-		t.Errorf("valid push errored: error=%v (%v) blocked=%v", action.Error, action.ErrorMessage, action.Blocked)
+	e := NewEngine(fs, nil)
+	e.remoteDir = t.TempDir() // avoid touching ./.remote
+	action := e.Execute(rawCtx(body), pushRequest(t))
+	if action.LastStep == nil || action.LastStep.StepName != "pullRemote" {
+		t.Fatalf("expected the chain to reach pullRemote; last step = %+v", action.LastStep)
+	}
+	if !action.Error {
+		t.Error("expected pullRemote to error without an auth header")
 	}
 	if len(fs.audited) != 1 {
 		t.Errorf("audited %d, want 1", len(fs.audited))

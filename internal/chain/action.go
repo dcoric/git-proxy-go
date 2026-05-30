@@ -18,6 +18,13 @@ import (
 // embedded Push unchanged.
 type Action struct {
 	db.Push
+
+	// cleanupClone marks that pullRemote successfully created a bare clone that
+	// the post-chain clearBareClone must remove. It is runtime-only (not
+	// persisted), mirroring the Node checkoutCleanUpRequired flag — set only on a
+	// successful clone, so the concurrent-request ("folder exists") and
+	// clone-failure paths do not trigger cleanup.
+	cleanupClone bool
 }
 
 // NewAction builds an Action for the given inbound request details, deriving the
