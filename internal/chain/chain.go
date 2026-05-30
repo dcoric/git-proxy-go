@@ -31,9 +31,9 @@ type Store interface {
 // errored and the chain stops).
 type Processor func(ctx context.Context, r *http.Request, a *Action) (*Action, error)
 
-// Engine runs the processor chains. The push/pull/default chains are populated
-// as the individual processors are ported (#40–#54); until then they are empty
-// and every request passes the chain (audited, then proxied).
+// Engine runs the processor chains. The push chain is filled out as the
+// individual processors are ported (#40–#54); the pull and default chains hold
+// only checkRepoInAuthorisedList (P4-3).
 type Engine struct {
 	store Store
 
@@ -42,10 +42,15 @@ type Engine struct {
 	defaultChain []Processor
 }
 
-// NewEngine builds the production engine over store. The processor chains start
-// empty; each processor PR appends its function to the relevant chain here.
+// NewEngine builds the production engine over store and wires the processor
+// chains. Today only checkRepoInAuthorisedList is ported; in the Node push
+// chain it sits after parsePush/checkEmptyBranch, which prepend it as they land.
 func NewEngine(store Store) *Engine {
-	return &Engine{store: store}
+	e := &Engine{store: store}
+	e.pushChain = []Processor{e.checkRepoInAuthorisedList}
+	e.pullChain = []Processor{e.checkRepoInAuthorisedList}
+	e.defaultChain = []Processor{e.checkRepoInAuthorisedList}
+	return e
 }
 
 // Execute runs the full chain for a request and returns the resulting action.

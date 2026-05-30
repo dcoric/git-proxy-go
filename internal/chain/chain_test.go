@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/dcoric/git-proxy-go/internal/db"
@@ -266,6 +267,71 @@ func TestParseActionTypeAndURL(t *testing.T) {
 				t.Errorf("url = %q, want %q", a.URL, tc.wantURL)
 			}
 		})
+	}
+}
+
+func TestCheckRepoInAuthorisedList(t *testing.T) {
+	const url = "https://github.com/finos/git-proxy.git"
+
+	// In the authorised list -> step logged, action still continuable.
+	fs := &fakeStore{repoByURL: map[string]*db.Repo{url: {}}}
+	e := &Engine{store: fs}
+	a := NewAction("id", "push", http.MethodPost, 0, url)
+	a, err := e.checkRepoInAuthorisedList(context.Background(), nil, a)
+	if err != nil {
+		t.Fatalf("checkRepoInAuthorisedList: %v", err)
+	}
+	if !a.Continue() {
+		t.Error("authorised repo should leave the action continuable")
+	}
+	if len(a.Steps) != 1 {
+		t.Errorf("steps = %d, want 1", len(a.Steps))
+	}
+
+	// Not in the list -> action errored.
+	fs = &fakeStore{}
+	e = &Engine{store: fs}
+	a = NewAction("id", "push", http.MethodPost, 0, url)
+	a, _ = e.checkRepoInAuthorisedList(context.Background(), nil, a)
+	if a.Continue() {
+		t.Error("unauthorised repo should stop the action")
+	}
+	if a.ErrorMessage == nil || !strings.Contains(*a.ErrorMessage, "not in the authorised whitelist") {
+		t.Errorf("errorMessage = %v, want whitelist rejection", a.ErrorMessage)
+	}
+
+	// Store error -> propagated (the chain marks the action errored).
+	fs = &fakeStore{getErr: errors.New("db down")}
+	e = &Engine{store: fs}
+	a = NewAction("id", "push", http.MethodPost, 0, url)
+	if _, err := e.checkRepoInAuthorisedList(context.Background(), nil, a); err == nil {
+		t.Error("expected store error to propagate")
+	}
+}
+
+func TestNewEngineRunsCheckRepo(t *testing.T) {
+	const url = "https://github.com/finos/git-proxy.git"
+
+	// Authorised push: not errored, and audited.
+	fs := &fakeStore{repoByURL: map[string]*db.Repo{url: {}}}
+	action := NewEngine(fs).Execute(context.Background(), pushRequest(t))
+	if action.Error || action.Blocked {
+		t.Errorf("authorised push errored: error=%v blocked=%v", action.Error, action.Blocked)
+	}
+	if len(fs.audited) != 1 {
+		t.Errorf("audited %d, want 1", len(fs.audited))
+	}
+
+	// Unauthorised pull: errored via the pull chain, and not audited.
+	fs = &fakeStore{}
+	r := httptest.NewRequest(http.MethodPost, "/github.com/finos/git-proxy.git/git-upload-pack", nil)
+	r.Header.Set("Content-Type", "application/x-git-upload-pack-request")
+	action = NewEngine(fs).Execute(context.Background(), r)
+	if !action.Error {
+		t.Error("unauthorised pull should be errored by checkRepoInAuthorisedList")
+	}
+	if len(fs.audited) != 0 {
+		t.Errorf("audited %d, want 0 for a pull", len(fs.audited))
 	}
 }
 
