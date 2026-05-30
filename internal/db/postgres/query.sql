@@ -4,8 +4,8 @@
 -- Users ---------------------------------------------------------------------
 
 -- name: CreateUser :exec
-INSERT INTO users (username, password, git_account, email, admin, oidc_id, display_name, title)
-VALUES (LOWER(@username), @password, @git_account, LOWER(@email), @admin, @oidc_id, @display_name, @title);
+INSERT INTO users (username, password, git_account, email, admin, oidc_id, display_name, title, public_keys)
+VALUES (LOWER(@username), @password, @git_account, LOWER(@email), @admin, @oidc_id, @display_name, @title, @public_keys);
 
 -- name: FindUser :one
 SELECT * FROM users WHERE username = LOWER(@username);
@@ -15,6 +15,11 @@ SELECT * FROM users WHERE email = LOWER(@email);
 
 -- name: FindUserByOIDC :one
 SELECT * FROM users WHERE oidc_id = @oidc_id;
+
+-- name: FindUserBySSHKey :one
+SELECT * FROM users
+WHERE public_keys @> jsonb_build_array(jsonb_build_object('key', @key::text))
+LIMIT 1;
 
 -- name: GetUsers :many
 SELECT * FROM users

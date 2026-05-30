@@ -76,6 +76,7 @@ type Store interface {
 	FindUser(ctx context.Context, username string) (*User, error)
 	FindUserByEmail(ctx context.Context, email string) (*User, error)
 	FindUserByOIDC(ctx context.Context, oidcID string) (*User, error)
+	FindUserBySSHKey(ctx context.Context, key string) (*User, error)
 	GetUsers(ctx context.Context, q UserQuery) ([]*User, error)
 	CreateUser(ctx context.Context, user *User) error
 	DeleteUser(ctx context.Context, username string) error
