@@ -14,14 +14,23 @@ package db
 // User is a git-proxy account. Mirrors the User class in src/db/types.ts.
 // Password is nil for OIDC-provisioned users.
 type User struct {
-	Username    string  `json:"username"`
-	Password    *string `json:"password"`
-	GitAccount  string  `json:"gitAccount"`
-	Email       string  `json:"email"`
-	Admin       bool    `json:"admin"`
-	OIDCID      *string `json:"oidcId,omitempty"`
-	DisplayName *string `json:"displayName,omitempty"`
-	Title       *string `json:"title,omitempty"`
+	Username    string      `json:"username"`
+	Password    *string     `json:"password"`
+	GitAccount  string      `json:"gitAccount"`
+	Email       string      `json:"email"`
+	Admin       bool        `json:"admin"`
+	OIDCID      *string     `json:"oidcId,omitempty"`
+	DisplayName *string     `json:"displayName,omitempty"`
+	Title       *string     `json:"title,omitempty"`
+	PublicKeys  []PublicKey `json:"publicKeys,omitempty"`
+}
+
+// PublicKey is a user's registered SSH public key. Key is the authorized_keys
+// form ("<algo> <base64>"); Fingerprint identifies it for management. Mirrors
+// the Node PublicKeyRecord (finos/git-proxy PR #1332).
+type PublicKey struct {
+	Key         string `json:"key"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // Repo is an authorised repository plus its push/authorise access lists.

@@ -166,6 +166,50 @@ func TestUsersRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUserSSHKeyLookup(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+
+	const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEYBYTES"
+	if err := testStore.CreateUser(ctx, &db.User{
+		Username: "carol", Email: "carol@example.com",
+		PublicKeys: []db.PublicKey{{Key: key, Fingerprint: "SHA256:abc"}},
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// The key round-trips through the JSONB column.
+	got, err := testStore.FindUser(ctx, "carol")
+	if err != nil || got == nil {
+		t.Fatalf("FindUser: %v / %v", got, err)
+	}
+	if len(got.PublicKeys) != 1 || got.PublicKeys[0].Key != key {
+		t.Errorf("publicKeys round-trip = %+v", got.PublicKeys)
+	}
+
+	// Lookup by the SSH key finds the owner.
+	bySSH, err := testStore.FindUserBySSHKey(ctx, key)
+	if err != nil || bySSH == nil {
+		t.Fatalf("FindUserBySSHKey: %v / %v", bySSH, err)
+	}
+	if bySSH.Username != "carol" {
+		t.Errorf("FindUserBySSHKey returned %q, want carol", bySSH.Username)
+	}
+
+	// A user created without keys has an empty (non-null) array and no match.
+	if err := testStore.CreateUser(ctx, &db.User{Username: "dave", Email: "dave@example.com"}); err != nil {
+		t.Fatalf("CreateUser(dave): %v", err)
+	}
+	if dave, _ := testStore.FindUser(ctx, "dave"); dave == nil || len(dave.PublicKeys) != 0 {
+		t.Errorf("dave publicKeys = %+v, want empty", dave)
+	}
+
+	// Unknown key -> (nil, nil).
+	if u, err := testStore.FindUserBySSHKey(ctx, "ssh-ed25519 NOSUCHKEY"); err != nil || u != nil {
+		t.Errorf("FindUserBySSHKey(unknown) = %v, %v; want nil, nil", u, err)
+	}
+}
+
 func TestUserOIDCLookup(t *testing.T) {
 	truncate(t)
 	ctx := context.Background()

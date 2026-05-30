@@ -56,4 +56,5 @@ type User struct {
 	OidcID      *string
 	DisplayName *string
 	Title       *string
+	PublicKeys  []byte
 }

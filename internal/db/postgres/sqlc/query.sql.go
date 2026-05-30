@@ -84,8 +84,8 @@ func (q *Queries) CreateRepo(ctx context.Context, arg CreateRepoParams) (Repo, e
 const createUser = `-- name: CreateUser :exec
 
 
-INSERT INTO users (username, password, git_account, email, admin, oidc_id, display_name, title)
-VALUES (LOWER($1), $2, $3, LOWER($4), $5, $6, $7, $8)
+INSERT INTO users (username, password, git_account, email, admin, oidc_id, display_name, title, public_keys)
+VALUES (LOWER($1), $2, $3, LOWER($4), $5, $6, $7, $8, $9)
 `
 
 type CreateUserParams struct {
@@ -97,6 +97,7 @@ type CreateUserParams struct {
 	OidcID      *string
 	DisplayName *string
 	Title       *string
+	PublicKeys  []byte
 }
 
 // sqlc query definitions for git-proxy-go. Generated into ./sqlc by `sqlc
@@ -112,6 +113,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
 		arg.OidcID,
 		arg.DisplayName,
 		arg.Title,
+		arg.PublicKeys,
 	)
 	return err
 }
@@ -144,7 +146,7 @@ func (q *Queries) DeleteUser(ctx context.Context, username string) error {
 }
 
 const findUser = `-- name: FindUser :one
-SELECT username, password, git_account, email, admin, oidc_id, display_name, title FROM users WHERE username = LOWER($1)
+SELECT username, password, git_account, email, admin, oidc_id, display_name, title, public_keys FROM users WHERE username = LOWER($1)
 `
 
 func (q *Queries) FindUser(ctx context.Context, username string) (User, error) {
@@ -159,12 +161,13 @@ func (q *Queries) FindUser(ctx context.Context, username string) (User, error) {
 		&i.OidcID,
 		&i.DisplayName,
 		&i.Title,
+		&i.PublicKeys,
 	)
 	return i, err
 }
 
 const findUserByEmail = `-- name: FindUserByEmail :one
-SELECT username, password, git_account, email, admin, oidc_id, display_name, title FROM users WHERE email = LOWER($1)
+SELECT username, password, git_account, email, admin, oidc_id, display_name, title, public_keys FROM users WHERE email = LOWER($1)
 `
 
 func (q *Queries) FindUserByEmail(ctx context.Context, email string) (User, error) {
@@ -179,12 +182,13 @@ func (q *Queries) FindUserByEmail(ctx context.Context, email string) (User, erro
 		&i.OidcID,
 		&i.DisplayName,
 		&i.Title,
+		&i.PublicKeys,
 	)
 	return i, err
 }
 
 const findUserByOIDC = `-- name: FindUserByOIDC :one
-SELECT username, password, git_account, email, admin, oidc_id, display_name, title FROM users WHERE oidc_id = $1
+SELECT username, password, git_account, email, admin, oidc_id, display_name, title, public_keys FROM users WHERE oidc_id = $1
 `
 
 func (q *Queries) FindUserByOIDC(ctx context.Context, oidcID *string) (User, error) {
@@ -199,6 +203,30 @@ func (q *Queries) FindUserByOIDC(ctx context.Context, oidcID *string) (User, err
 		&i.OidcID,
 		&i.DisplayName,
 		&i.Title,
+		&i.PublicKeys,
+	)
+	return i, err
+}
+
+const findUserBySSHKey = `-- name: FindUserBySSHKey :one
+SELECT username, password, git_account, email, admin, oidc_id, display_name, title, public_keys FROM users
+WHERE public_keys @> jsonb_build_array(jsonb_build_object('key', $1::text))
+LIMIT 1
+`
+
+func (q *Queries) FindUserBySSHKey(ctx context.Context, key string) (User, error) {
+	row := q.db.QueryRow(ctx, findUserBySSHKey, key)
+	var i User
+	err := row.Scan(
+		&i.Username,
+		&i.Password,
+		&i.GitAccount,
+		&i.Email,
+		&i.Admin,
+		&i.OidcID,
+		&i.DisplayName,
+		&i.Title,
+		&i.PublicKeys,
 	)
 	return i, err
 }
@@ -360,7 +388,7 @@ func (q *Queries) GetRepos(ctx context.Context, arg GetReposParams) ([]Repo, err
 }
 
 const getUsers = `-- name: GetUsers :many
-SELECT username, password, git_account, email, admin, oidc_id, display_name, title FROM users
+SELECT username, password, git_account, email, admin, oidc_id, display_name, title, public_keys FROM users
 WHERE ($1::text IS NULL OR username = LOWER($1))
   AND ($2::text IS NULL OR email = LOWER($2))
 ORDER BY username
@@ -389,6 +417,7 @@ func (q *Queries) GetUsers(ctx context.Context, arg GetUsersParams) ([]User, err
 			&i.OidcID,
 			&i.DisplayName,
 			&i.Title,
+			&i.PublicKeys,
 		); err != nil {
 			return nil, err
 		}

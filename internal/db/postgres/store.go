@@ -272,7 +272,14 @@ func (s *Store) CreateUser(ctx context.Context, u *db.User) error {
 		OidcID:      u.OIDCID,
 		DisplayName: u.DisplayName,
 		Title:       u.Title,
+		PublicKeys:  marshalPublicKeys(u.PublicKeys),
 	})
+}
+
+// FindUserBySSHKey looks a user up by a registered SSH public key (the
+// authorized_keys form "<algo> <base64>").
+func (s *Store) FindUserBySSHKey(ctx context.Context, key string) (*db.User, error) {
+	return s.oneUser(s.q.FindUserBySSHKey(ctx, key))
 }
 
 // FindUser looks a user up by (lower-cased) username.
@@ -355,7 +362,33 @@ func userFromRow(u sqlc.User) *db.User {
 		OIDCID:      u.OidcID,
 		DisplayName: u.DisplayName,
 		Title:       u.Title,
+		PublicKeys:  unmarshalPublicKeys(u.PublicKeys),
 	}
+}
+
+// marshalPublicKeys encodes a user's SSH keys for the public_keys JSONB column,
+// emitting an empty array (never NULL/null) when there are none.
+func marshalPublicKeys(keys []db.PublicKey) []byte {
+	if len(keys) == 0 {
+		return []byte("[]")
+	}
+	b, err := json.Marshal(keys)
+	if err != nil {
+		return []byte("[]")
+	}
+	return b
+}
+
+// unmarshalPublicKeys decodes the public_keys JSONB column.
+func unmarshalPublicKeys(b []byte) []db.PublicKey {
+	if len(b) == 0 {
+		return nil
+	}
+	var keys []db.PublicKey
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return nil
+	}
+	return keys
 }
 
 // orEmpty returns s, or an empty (non-nil) slice when s is nil, so NOT NULL

@@ -85,6 +85,7 @@ func (f *fakeStore) RemoveUserCanAuthorise(context.Context, string, string) erro
 func (f *fakeStore) DeleteRepo(context.Context, string) error                     { return nil }
 func (f *fakeStore) FindUserByEmail(context.Context, string) (*db.User, error)    { return nil, nil }
 func (f *fakeStore) FindUserByOIDC(context.Context, string) (*db.User, error)     { return nil, nil }
+func (f *fakeStore) FindUserBySSHKey(context.Context, string) (*db.User, error)   { return nil, nil }
 func (f *fakeStore) GetUsers(context.Context, db.UserQuery) ([]*db.User, error)   { return nil, nil }
 func (f *fakeStore) DeleteUser(context.Context, string) error                     { return nil }
 func (f *fakeStore) UpdateUser(context.Context, *db.User) error                   { return nil }
