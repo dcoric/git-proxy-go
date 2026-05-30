@@ -82,7 +82,7 @@ func run() error {
 		}
 		defer store.Close()
 
-		gitHandler, err = setupGitProxy(ctx, cfg, store)
+		gitHandler, err = setupGitProxy(ctx, cfg, env, store)
 		if err != nil {
 			return err
 		}
@@ -156,7 +156,7 @@ func serveAll(ctx context.Context, servers ...*proxyhttp.Servers) error {
 
 // setupGitProxy seeds the authorised repos and builds the git transport proxy
 // handler over the chain engine. Mirrors the Node proxyPreparations + getRouter.
-func setupGitProxy(ctx context.Context, cfg *config.Config, store *postgres.Store) (http.Handler, error) {
+func setupGitProxy(ctx context.Context, cfg *config.Config, env config.ServerEnv, store *postgres.Store) (http.Handler, error) {
 	if err := seedAuthorisedRepos(ctx, cfg, store); err != nil {
 		return nil, fmt.Errorf("seed authorised repos: %w", err)
 	}
@@ -164,7 +164,8 @@ func setupGitProxy(ctx context.Context, cfg *config.Config, store *postgres.Stor
 	if err != nil {
 		return nil, fmt.Errorf("list proxied hosts: %w", err)
 	}
-	return proxygit.NewHandler(chain.NewEngine(store, cfg), origins), nil
+	engine := chain.NewEngine(store, cfg, env.UIPort, env.GitServerPort)
+	return proxygit.NewHandler(engine, origins), nil
 }
 
 // seedAuthorisedRepos ensures every repo in the config's authorisedList exists
