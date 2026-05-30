@@ -164,7 +164,7 @@ func setupGitProxy(ctx context.Context, cfg *config.Config, store *postgres.Stor
 	if err != nil {
 		return nil, fmt.Errorf("list proxied hosts: %w", err)
 	}
-	return proxygit.NewHandler(chain.NewEngine(store), origins), nil
+	return proxygit.NewHandler(chain.NewEngine(store, cfg), origins), nil
 }
 
 // seedAuthorisedRepos ensures every repo in the config's authorisedList exists

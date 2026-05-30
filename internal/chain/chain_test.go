@@ -16,11 +16,12 @@ import (
 
 // fakeStore records the chain's store interactions for assertions.
 type fakeStore struct {
-	repoByURL  map[string]*db.Repo
-	getErr     error
-	audited    []*db.Push
-	authorised []string
-	rejected   []string
+	repoByURL    map[string]*db.Repo
+	usersByEmail map[string][]*db.User
+	getErr       error
+	audited      []*db.Push
+	authorised   []string
+	rejected     []string
 }
 
 func (f *fakeStore) GetRepoByURL(_ context.Context, url string) (*db.Repo, error) {
@@ -28,6 +29,12 @@ func (f *fakeStore) GetRepoByURL(_ context.Context, url string) (*db.Repo, error
 		return nil, f.getErr
 	}
 	return f.repoByURL[url], nil
+}
+func (f *fakeStore) GetUsers(_ context.Context, q db.UserQuery) ([]*db.User, error) {
+	if q.Email != nil {
+		return f.usersByEmail[*q.Email], nil
+	}
+	return nil, nil
 }
 func (f *fakeStore) WriteAudit(_ context.Context, p *db.Push) error {
 	f.audited = append(f.audited, p)
@@ -312,14 +319,17 @@ func TestCheckRepoInAuthorisedList(t *testing.T) {
 func TestNewEngineRunsCheckRepo(t *testing.T) {
 	const url = "https://github.com/finos/git-proxy.git"
 
-	// Authorised push: not errored, and audited. parsePush now heads the push
-	// chain, so the request needs a valid receive-pack body.
+	// A fully valid push passes the whole pre-clone chain and is audited. The
+	// committer (Bob) must be a known user on the repo's canPush list.
 	body := buildReceivePack(t, "2222222222222222222222222222222222222222",
 		"1111111111111111111111111111111111111111", "refs/heads/main", sampleCommit("abc123"))
-	fs := &fakeStore{repoByURL: map[string]*db.Repo{url: {}}}
-	action := NewEngine(fs).Execute(rawCtx(body), pushRequest(t))
+	fs := &fakeStore{
+		repoByURL:    map[string]*db.Repo{url: {Users: db.RepoUsers{CanPush: []string{"bob"}}}},
+		usersByEmail: map[string][]*db.User{"bob@example.com": {{Username: "bob"}}},
+	}
+	action := NewEngine(fs, nil).Execute(rawCtx(body), pushRequest(t))
 	if action.Error || action.Blocked {
-		t.Errorf("authorised push errored: error=%v blocked=%v", action.Error, action.Blocked)
+		t.Errorf("valid push errored: error=%v (%v) blocked=%v", action.Error, action.ErrorMessage, action.Blocked)
 	}
 	if len(fs.audited) != 1 {
 		t.Errorf("audited %d, want 1", len(fs.audited))
@@ -329,7 +339,7 @@ func TestNewEngineRunsCheckRepo(t *testing.T) {
 	fs = &fakeStore{}
 	r := httptest.NewRequest(http.MethodPost, "/github.com/finos/git-proxy.git/git-upload-pack", nil)
 	r.Header.Set("Content-Type", "application/x-git-upload-pack-request")
-	action = NewEngine(fs).Execute(context.Background(), r)
+	action = NewEngine(fs, nil).Execute(context.Background(), r)
 	if !action.Error {
 		t.Error("unauthorised pull should be errored by checkRepoInAuthorisedList")
 	}
