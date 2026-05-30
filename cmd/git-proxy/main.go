@@ -54,10 +54,11 @@ func run() error {
 	env := config.LoadServerEnv()
 
 	opts := proxyhttp.Options{
-		AllowedOrigins: parseAllowedOrigins(os.Getenv("ALLOWED_ORIGINS")),
-		RateLimitRPS:   cfg.RateLimitRPS(),
-		RateLimitBurst: cfg.RateLimitBurst(),
-		CSRFProtection: cfg.CSRFProtection != nil && *cfg.CSRFProtection,
+		AllowedOrigins:  parseAllowedOrigins(os.Getenv("ALLOWED_ORIGINS")),
+		RateLimitRPS:    cfg.RateLimitRPS(),
+		RateLimitBurst:  cfg.RateLimitBurst(),
+		CSRFProtection:  cfg.CSRFProtection != nil && *cfg.CSRFProtection,
+		OIDCRedirectURL: fmt.Sprintf("%s:%s/dashboard/profile", env.UIHost, env.UIPort),
 	}
 
 	// Wire the Postgres-backed session + auth routes when a DSN is configured.
@@ -113,6 +114,17 @@ func setupAuth(ctx context.Context, cfg *config.Config, dsn string, opts *proxyh
 			store.Close()
 			return nil, fmt.Errorf("seed default users: %w", err)
 		}
+	}
+
+	// Construct the OIDC strategy here (not in BuildRegistry) so provider
+	// discovery runs at startup and configuration errors fail fast.
+	if oidcConfig := auth.EnabledOIDCConfig(cfg); oidcConfig != nil {
+		strategy, err := auth.NewOIDCStrategy(ctx, oidcConfig, store)
+		if err != nil {
+			store.Close()
+			return nil, fmt.Errorf("configure OIDC: %w", err)
+		}
+		registry.EnableOIDC(strategy)
 	}
 
 	sqlDB := stdlib.OpenDBFromPool(store.Pool())
