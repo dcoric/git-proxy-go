@@ -23,6 +23,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/dcoric/git-proxy-go/internal/auth"
+	"github.com/dcoric/git-proxy-go/internal/config"
 	"github.com/dcoric/git-proxy-go/internal/db"
 )
 
@@ -51,6 +52,13 @@ type Options struct {
 	// (the UI profile page, ${GIT_PROXY_UI_HOST}:${GIT_PROXY_UI_PORT}/dashboard/profile).
 	// Only used when the registry has an OIDC strategy enabled.
 	OIDCRedirectURL string
+
+	// Config backs the /api/v1/config routes and the API JWT middleware (P4-4).
+	Config *config.Config
+	// UIPort / GitProxyPort are the management and git-transport listener ports,
+	// used to build each repo's proxyURL in the /api/v1/repo responses.
+	UIPort       string
+	GitProxyPort string
 }
 
 // authReady reports whether the auth dependencies are all wired.
@@ -100,6 +108,19 @@ func NewRouter(opts Options) http.Handler {
 			sessions:        opts.Sessions,
 			registry:        opts.Auth,
 			oidcRedirectURL: opts.OIDCRedirectURL,
+		}).mount(r)
+
+		// P4-4: management API route groups (push/repo/users/config/home).
+		apiCfg := opts.Config
+		if apiCfg == nil {
+			apiCfg = &config.Config{}
+		}
+		(&apiHandler{
+			store:        opts.Store,
+			sessions:     opts.Sessions,
+			cfg:          apiCfg,
+			uiPort:       opts.UIPort,
+			gitProxyPort: opts.GitProxyPort,
 		}).mount(r)
 	}
 
