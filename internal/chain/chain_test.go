@@ -312,9 +312,12 @@ func TestCheckRepoInAuthorisedList(t *testing.T) {
 func TestNewEngineRunsCheckRepo(t *testing.T) {
 	const url = "https://github.com/finos/git-proxy.git"
 
-	// Authorised push: not errored, and audited.
+	// Authorised push: not errored, and audited. parsePush now heads the push
+	// chain, so the request needs a valid receive-pack body.
+	body := buildReceivePack(t, "2222222222222222222222222222222222222222",
+		"1111111111111111111111111111111111111111", "refs/heads/main", sampleCommit("abc123"))
 	fs := &fakeStore{repoByURL: map[string]*db.Repo{url: {}}}
-	action := NewEngine(fs).Execute(context.Background(), pushRequest(t))
+	action := NewEngine(fs).Execute(rawCtx(body), pushRequest(t))
 	if action.Error || action.Blocked {
 		t.Errorf("authorised push errored: error=%v blocked=%v", action.Error, action.Blocked)
 	}
